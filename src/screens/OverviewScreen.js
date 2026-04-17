@@ -250,11 +250,14 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     return parts.length > 0 ? parts.join(', ') : null;
   };
 
-  const doLevelUp = () => {
+  const doLevelUp = async () => {
     const calc = calcLevelUp();
     if (!calc) return;
 
     const { newLevel, newHpMax, hpIncrease, newProfBonus } = calc;
+    const oldInvocations = character.getMaxInvocations();
+    const newInvocations = classData?.levels?.[newLevel]?.invocations ?? oldInvocations;
+    const gainedInvocations = Math.max(0, newInvocations - oldInvocations);
 
     // 1. Calculate new values using the character engine directly
     const safeHpCurrent     = parseInt(character.hpCurrent, 10) || 10;
@@ -305,8 +308,10 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     character.proficiencies    = updatedProficiencies;
 
     // 3. Save to database and trigger UI refresh
-    persist(character.toJSON());
+    await persist(character.toJSON());
     setRefreshTrigger(prev => prev + 1);
+
+    const isWarlockInvocationGain = character.classId === 'warlock' && gainedInvocations > 0;
 
     // Reset choice state and close modal
     setAsiChoice(null);
@@ -314,6 +319,17 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     setSelectedFeat(null);
     setFeatChoices({});
     setLevelUpModalVisible(false);
+
+    if (isWarlockInvocationGain) {
+      navigation.navigate('InvocationPicker', {
+        character,
+        onSave: (list) => {
+          character.knownInvocations = list;
+          saveCharacter(character);
+          setRefreshTrigger(prev => prev + 1);
+        }
+      });
+    }
   };
 
   const calcLevelUp = () => {
@@ -818,6 +834,9 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
 
         const { newLevel, hpIncrease, newProfBonus, levelData } = calc;
         const isASILevel = levelData?.features?.includes('Ability Score Improvement') ?? false;
+        const currentInvocations = character.getMaxInvocations();
+        const nextInvocations = levelData?.invocations ?? currentInvocations;
+        const gainedInvocations = Math.max(0, nextInvocations - currentInvocations);
 
         return (
           <>
@@ -857,6 +876,14 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                   <Text style={styles.levelUpLabel}>{classData?.resource?.name ?? 'Resource'}</Text>
                   <Text style={styles.levelUpValue}>
                     <Text style={{ color: colors.gold }}>{levelData.resourceMax}</Text>
+                  </Text>
+                </View>
+              )}
+              {character.classId === 'warlock' && gainedInvocations > 0 && (
+                <View style={styles.levelUpRow}>
+                  <Text style={styles.levelUpLabel}>Eldritch Invocations</Text>
+                  <Text style={styles.levelUpValue}>
+                    <Text style={{ color: colors.gold }}>+{gainedInvocations}</Text>
                   </Text>
                 </View>
               )}

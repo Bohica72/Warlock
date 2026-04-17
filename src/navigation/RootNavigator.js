@@ -6,6 +6,7 @@ import CharacterListScreen from '../screens/CharacterListScreen';
 import CharacterTabs from './CharacterTabs';
 import CharacterCreationWizard from '../screens/CharacterCreationWizard';
 import SpellPickerScreen from '../screens/SpellPickerScreen'; // <-- Added Import!
+import InvocationPickerScreen from '../screens/InvocationPickerScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -56,7 +57,17 @@ export default function RootNavigator() {
           headerShadowVisible: false,
         }}
       />
-      
+      <Stack.Screen
+        name="InvocationPicker"
+        component={InvocationPickerScreen}
+        options={{
+          presentation: 'modal',
+          headerTitle: 'Choose Invocations',
+          headerStyle: { backgroundColor: colors.surface, height: 40 },
+          headerTintColor: colors.textPrimary,
+          headerShadowVisible: false,
+        }}
+      />
     </Stack.Navigator>
   );
 }

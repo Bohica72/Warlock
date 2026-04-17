@@ -33,6 +33,7 @@ export class Character {
     this.classSource = data.classSource ?? null;
     this.knownCantrips = data.knownCantrips ?? [];
     this.feats       = data.feats ?? [];
+    this.knownInvocations = data.knownInvocations ?? [];
 
     if (data.abilities) {
       this.abilities = data.abilities;
@@ -214,6 +215,12 @@ getPopulatedSpells() {
       .filter(spell => spell != null); // Safely ignore any missing spells
   }
 
+  getMaxInvocations() {
+  const classData = getClassData(this.classId);
+  const levelData = classData?.levels?.[this.level || 1];
+  return levelData?.invocations || 0;
+}
+
 
   getUnarmedAttack() {
     const classData = getClassData(this.classId);
@@ -235,6 +242,8 @@ getPopulatedSpells() {
       profBonus:    this.proficiencyBonus,
     };
   }
+
+
 
   // ─── Ability scores ──────────────────────────────────────────────────────────
   getAbilityScore(ability) {
@@ -477,6 +486,7 @@ getPopulatedSpells() {
       spellSlotsUsed:      this.spellSlotsUsed,
       preparedSpells:      this.preparedSpells,
       knownCantrips:       this.knownCantrips,
+      knownInvocations:    this.knownInvocations,
       hpMax:               this.hpMax,
       hpCurrent:           this.hpCurrent,
       hpTemp:              this.hpTemp,

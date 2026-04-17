@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Character } from '../models/Character';
 import { saveCharacter } from '../utils/CharacterStore';
 import { getAllSpells } from '../utils/DataLoader';
+import { getClassData } from '../data/classes';
 import { colors, spacing, radius, typography, sharedStyles } from '../styles/theme';
 
 export default function SpellPickerScreen({ route, navigation }) {
@@ -18,6 +19,25 @@ export default function SpellPickerScreen({ route, navigation }) {
   const [selectedSpell, setSelectedSpell] = useState(null);
 
   const allSpells = useMemo(() => getAllSpells(), []);
+  const classData = getClassData(character.classId);
+  const levelData = classData?.levels?.[character.level] ?? {};
+  const spellsKnownLimit = levelData?.spellsKnown ?? classData?.progressionExtras?.spellsKnown?.[character.level] ?? Infinity;
+  const cantripsKnownLimit = levelData?.cantripsKnown ?? classData?.progressionExtras?.cantripsKnown?.[character.level] ?? Infinity;
+
+  const selectedCounts = useMemo(() => {
+    let spells = 0;
+    let cantrips = 0;
+    for (const name of localPrepared) {
+      const spell = allSpells.find(s => s.name === name);
+      if (!spell) continue;
+      if (spell.level === 0) {
+        cantrips += 1;
+      } else {
+        spells += 1;
+      }
+    }
+    return { spells, cantrips };
+  }, [localPrepared, allSpells]);
 
   const filteredSpells = useMemo(() => {
     return allSpells.filter(spell => {
@@ -29,11 +49,22 @@ export default function SpellPickerScreen({ route, navigation }) {
 
   const toggleSpell = (spellName) => {
     setLocalPrepared(prev => {
-      if (prev.includes(spellName)) {
+      const isSelected = prev.includes(spellName);
+      const spell = allSpells.find(s => s.name === spellName);
+      const isCantrip = spell?.level === 0;
+
+      if (isSelected) {
         return prev.filter(name => name !== spellName);
-      } else {
-        return [...prev, spellName];
       }
+
+      if (isCantrip && selectedCounts.cantrips >= cantripsKnownLimit) {
+        return prev;
+      }
+      if (!isCantrip && selectedCounts.spells >= spellsKnownLimit) {
+        return prev;
+      }
+
+      return [...prev, spellName];
     });
   };
 
@@ -51,14 +82,20 @@ export default function SpellPickerScreen({ route, navigation }) {
 
   const renderSpell = ({ item }) => {
     const isSelected = localPrepared.includes(item.name);
+    const isCantrip = item.level === 0;
+    const isDisabled = !isSelected && (
+      (isCantrip && selectedCounts.cantrips >= cantripsKnownLimit) ||
+      (!isCantrip && selectedCounts.spells >= spellsKnownLimit)
+    );
 
     return (
       <TouchableOpacity 
-        style={[styles.spellRow, isSelected && styles.spellRowSelected]}
-        onPress={() => toggleSpell(item.name)}
+        style={[styles.spellRow, isSelected && styles.spellRowSelected, isDisabled && styles.spellRowDisabled]}
+        onPress={() => !isDisabled && toggleSpell(item.name)}
         onLongPress={() => setSelectedSpell(item)} // NEW: Open modal on long press
         delayLongPress={300}
         activeOpacity={0.7}
+        disabled={isDisabled}
       >
         <View style={styles.spellInfo}>
           <Text style={[styles.spellName, isSelected && { color: colors.accent }]}>
@@ -110,6 +147,14 @@ export default function SpellPickerScreen({ route, navigation }) {
           )}
           style={styles.filterList}
         />
+        <View style={styles.limitRow}>
+          <Text style={styles.limitText}>
+            {`Spells: ${selectedCounts.spells}/${spellsKnownLimit === Infinity ? '∞' : spellsKnownLimit}`}
+          </Text>
+          <Text style={styles.limitText}>
+            {`Cantrips: ${selectedCounts.cantrips}/${cantripsKnownLimit === Infinity ? '∞' : cantripsKnownLimit}`}
+          </Text>
+        </View>
       </View>
 
       {/* SPELL LIST */}
@@ -220,6 +265,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   countText: { color: colors.textMuted, fontSize: 14, fontWeight: 'bold' },
+  limitRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  limitText: { color: colors.textMuted, fontSize: 12 },
+  spellRowDisabled: {
+    opacity: 0.4,
+  },
 
   // Modal Styles
   modalMetaGrid: {

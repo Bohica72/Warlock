@@ -7,7 +7,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { addCharacter } from '../utils/CharacterStore';
 import { Character } from '../models/Character';
-import { getBackgroundFeats } from '../utils/DataLoader';
+import { getRaces, getBackgrounds, getBackgroundFeats } from '../utils/DataLoader';
 import { applyFeatEffects, FEAT_EFFECTS } from '../data/featEffects';
 import { formatFeatSummary } from '../utils/featUtils';
 import { getAllClasses } from '../data/classes'; // From your new unified index!
