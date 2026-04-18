@@ -4,16 +4,18 @@ import itemsData from '../data/items.json';
 export const ALL_ITEMS = itemsData;
 
 // Search by name, returns up to `limit` results
-export function searchItems(query, limit = 30) {
+export function searchItems(query, limit = 30, customItems = []) {
   if (!query || query.length < 2) return [];
   const q = query.toLowerCase();
-  return ALL_ITEMS.filter(item =>
+  const allItems = [...ALL_ITEMS, ...customItems];
+  return allItems.filter(item =>
     item.Name.toLowerCase().includes(q)
   ).slice(0, limit);
 }
 
 // Look up a single item by exact name
-export function getItemByName(name) {
-  const result = ALL_ITEMS.find(item => item.Name === name) ?? null;
+export function getItemByName(name, customItems = []) {
+  const allItems = [...ALL_ITEMS, ...customItems];
+  const result = allItems.find(item => item.Name === name) ?? null;
   return result;
 }

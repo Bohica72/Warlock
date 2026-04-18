@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "character_sheet",
+    "name": "Critical_Fail",
     "slug": "character_sheet",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -21,7 +21,7 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.anonymous.character_sheet"
+      "package": "com.anonymous.critical_fail"
     },
     "web": {
       "favicon": "./assets/favicon.png"

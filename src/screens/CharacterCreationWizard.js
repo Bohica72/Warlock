@@ -207,7 +207,12 @@ let newCharWithFeat = wizard.feat
 
 // Save feat to character
 newCharWithFeat.feats = wizard.feat
-  ? [{ name: wizard.feat.name, source: wizard.feat.source, takenAtLevel: 1 }]
+  ? [{
+      name: wizard.feat.name,
+      source: wizard.feat.source,
+      takenAtLevel: 1,
+      ...(wizard.feat.name === 'Tough' ? { hpBonusAppliedLevel: 1 } : {}),
+    }]
   : [];
 
 await addCharacter(newCharWithFeat);
@@ -383,7 +388,7 @@ function RaceStep({ wizard, update, search, setSearch }) {
           <View style={{ flex: 1 }}>
             <Text style={styles.selectedName}>{wizard.race.name}</Text>
             <Text style={styles.selectedMeta}>
-              Speed: {wizard.race.speed} ft.  ·  Size: {wizard.race.size}
+              Speed: {typeof wizard.race.speed === 'object' && wizard.race.speed !== null ? (wizard.race.speed.walk ?? 30) : (wizard.race.speed ?? 30)} ft.  ·  Size: {wizard.race.size}
               {wizard.race.darkvision > 0 ? `  ·  Darkvision: ${wizard.race.darkvision} ft.` : ''}
             </Text>
           </View>
@@ -409,7 +414,7 @@ function RaceStep({ wizard, update, search, setSearch }) {
                 <Text style={styles.raceSource}>{item.source}</Text>
               </View>
               <Text style={styles.raceMeta}>
-                Speed: {item.speed} ft.  ·  Size: {item.size}
+                Speed: {typeof item.speed === 'object' && item.speed !== null ? (item.speed.walk ?? 30) : (item.speed ?? 30)} ft.  ·  Size: {item.size}
                 {item.darkvision > 0 ? `  ·  Darkvision: ${item.darkvision} ft.` : ''}
               </Text>
               

@@ -13,6 +13,14 @@ export default function InvocationPickerScreen({ route, navigation }) {
   const [hasSaved, setHasSaved] = React.useState(false);
 
   const maxInvocations = character.getMaxInvocations();
+  const currentLevel = parseInt(character.level, 10) || 1;
+
+  const normalizeKey = (value) =>
+    String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/\s+/g, '_');
 
   // Handle back button save
   useEffect(() => {
@@ -26,18 +34,23 @@ export default function InvocationPickerScreen({ route, navigation }) {
 
   const checkPrerequisites = (inv) => {
     // 1. Level Check
-    if (character.level < inv.minLevel) return { met: false, reason: `Requires Level ${inv.minLevel}` };
+    const minLevel = parseInt(inv.minLevel, 10) || 0;
+    if (currentLevel < minLevel) return { met: false, reason: `Requires Level ${minLevel}` };
 
     // 2. Prerequisite Check
     const knownSpellNames = [
       ...(character.preparedSpells || []),
       ...(character.knownSpells || []),
-    ];
+      ...(character.knownCantrips || []),
+      ...(character.getPopulatedSpells?.() || []).map((spell) => spell?.name),
+    ].filter(Boolean);
+
+    const knownSpellKeys = new Set(knownSpellNames.map(normalizeKey));
 
     if (inv.prerequisites) {
       for (const req of inv.prerequisites) {
-        if (req.type === 'spell' && !knownSpellNames.includes(req.value)) {
-          return { met: false, reason: `Requires spell: ${req.value.replace('_', ' ')}` };
+        if (req.type === 'spell' && !knownSpellKeys.has(normalizeKey(req.value))) {
+          return { met: false, reason: `Requires spell: ${String(req.value).replace(/_/g, ' ')}` };
         }
         if (req.type === 'pactBoon' && !selected.includes(`pact_of_the_${req.value}`)) {
           return { met: false, reason: `Requires Pact of the ${req.value}` };
@@ -60,7 +73,7 @@ export default function InvocationPickerScreen({ route, navigation }) {
       <View style={styles.header}>
         <Text style={styles.countText}>Selected: {selected.length} / {maxInvocations}</Text>
         <TouchableOpacity onPress={() => { setHasSaved(true); onSave(selected); navigation.goBack(); }}>
-          <Text style={styles.saveBtn}>Done</Text>
+          <Text style={styles.countText}>Done</Text>
         </TouchableOpacity>
       </View>
 

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Switch, TextInput, Alert, StyleSheet, SafeAreaView, Keyboard, Modal } from 'react-native';
+import React, { useRef, useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, Switch, TextInput, Alert, StyleSheet, SafeAreaView, Keyboard, Modal, PanResponder, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography, radius, sharedStyles,shadows } from '../styles/theme';
 import { Character } from '../models/Character';
@@ -16,25 +16,29 @@ import MagicScreen from '../screens/MagicScreen';
 
 export default function CharacterTabs({ route, navigation }) {
   const raw = route.params.character;
-  const character = raw instanceof Character ? raw : new Character(raw);
+  const [characterState, setCharacterState] = useState(
+    raw instanceof Character ? raw : new Character(raw)
+  );
+  const character = characterState;
+
+  React.useEffect(() => {
+    setCharacterState(raw instanceof Character ? raw : new Character(raw));
+  }, [raw]);
 
   // 1. Derive class data
 // 1. Derive class data (safely forcing lowercase)
   const safeClassId = (character.classId || '').toLowerCase();
   const classData = getClassData(safeClassId);
 
-  // --- ADD THIS DEBUG BLOCK ---
-  console.log("--- TAB DEBUGGER ---");
-  console.log("1. Character ID:", safeClassId);
-  console.log("2. Did we find Class Data?:", !!classData);
-  console.log("3. Is it a Spellcaster?:", classData?.spellcasting?.isSpellcaster);
-  //
-
   // 2. ALL useState hooks — must come before any conditionals or early returns
   const [activeTab, setActiveTab]           = useState('Overview');
   const [menuVisible, setMenuVisible]       = useState(false);
   const [restCallback, setRestCallback]     = useState(null);
   const [levelUpCallback, setLevelUpCallback] = useState(null);
+  const [levelDownCallback, setLevelDownCallback] = useState(null);
+  const [addTileCallback, setAddTileCallback] = useState(null);
+  const [manageFeatsCallback, setManageFeatsCallback] = useState(null);
+  const [toggleUnarmedStrikeCallback, setToggleUnarmedStrikeCallback] = useState(null);
   const [createWeaponVisible, setCreateWeaponVisible] = useState(false);
   const [weaponName, setWeaponName] = useState('');
   const [weaponType, setWeaponType] = useState('');
@@ -109,6 +113,8 @@ const handleSaveCustomWeapon = async () => {
     
     // 3. Save to device storage
     await saveCharacter(updatedCharacter);
+
+    setCharacterState(updatedCharacter);
     
     // 4. Force React Navigation to update, instantly revealing the weapon on all tabs!
     navigation.setParams({ character: updatedCharacter });
@@ -142,6 +148,78 @@ const handleSaveCustomWeapon = async () => {
     // And here!
     ...(classData?.spellcasting?.isSpellcaster ? [{ key: 'Magic', label: 'Magic', icon: 'sparkles-outline' }] : []),
   ];
+
+  const tabKeys = TABS.map(tab => tab.key);
+  const activeTabIndex = Math.max(0, tabKeys.indexOf(activeTab));
+  const previousTabIndexRef = useRef(activeTabIndex);
+  const transitionDirectionRef = useRef(1);
+  const tabTransition = useRef(new Animated.Value(1)).current;
+
+  const setActiveTabWithAnimation = React.useCallback((nextTab, directionOverride = null) => {
+    if (!nextTab || nextTab === activeTab) return;
+
+    const nextIndex = tabKeys.indexOf(nextTab);
+    const currentIndex = activeTabIndex;
+    if (nextIndex < 0) return;
+
+    transitionDirectionRef.current = directionOverride ?? (nextIndex >= currentIndex ? 1 : -1);
+    setActiveTab(nextTab);
+  }, [activeTab, activeTabIndex, tabKeys]);
+
+  React.useEffect(() => {
+    const previousIndex = previousTabIndexRef.current;
+    if (previousIndex === activeTabIndex) return;
+
+    tabTransition.stopAnimation();
+    tabTransition.setValue(0);
+
+    Animated.timing(tabTransition, {
+      toValue: 1,
+      duration: 140,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+
+    previousTabIndexRef.current = activeTabIndex;
+  }, [activeTabIndex, tabTransition]);
+
+  React.useEffect(() => {
+    previousTabIndexRef.current = activeTabIndex;
+  }, []);
+
+  const animatedScreenStyle = {
+    opacity: tabTransition.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.72, 1],
+    }),
+    transform: [
+      {
+        translateX: tabTransition.interpolate({
+          inputRange: [0, 1],
+          outputRange: [transitionDirectionRef.current * 18, 0],
+        }),
+      },
+    ],
+  };
+
+  const swipeResponder = React.useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gestureState) => {
+      const absX = Math.abs(gestureState.dx);
+      const absY = Math.abs(gestureState.dy);
+      return absX > 24 && absX > absY * 1.2;
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      if (Math.abs(gestureState.dx) < 50) return;
+
+      const nextIndex = gestureState.dx < 0
+        ? activeTabIndex + 1
+        : activeTabIndex - 1;
+
+      if (nextIndex >= 0 && nextIndex < tabKeys.length) {
+        setActiveTabWithAnimation(tabKeys[nextIndex], gestureState.dx < 0 ? 1 : -1);
+      }
+    },
+  }), [activeTabIndex, setActiveTabWithAnimation, tabKeys]);
 
   // 4. Derive ActiveScreen — safe now because SCREENS and activeTab both exist
   const ActiveScreen = SCREENS[activeTab];
@@ -339,7 +417,7 @@ const handleSaveCustomWeapon = async () => {
           <TouchableOpacity
             key={tab.key}
             style={[styles.tab, activeTab === tab.key && styles.tabActive]}
-            onPress={() => setActiveTab(tab.key)}
+            onPress={() => setActiveTabWithAnimation(tab.key)}
           >
             <Ionicons
               name={tab.icon}
@@ -354,15 +432,28 @@ const handleSaveCustomWeapon = async () => {
       </View>
 
       {/* Active screen */}
-      <View style={styles.screenContainer}>
-        <ActiveScreen
-          route={{ params: { character } }}
-          navigation={navigation}
-          onRegisterActions={(actions) => {
-            if (actions.openRest)    setRestCallback(() => actions.openRest);
-            if (actions.openLevelUp) setLevelUpCallback(() => actions.openLevelUp);
-          }}
-        />
+      <View style={styles.screenContainer} {...swipeResponder.panHandlers}>
+        <Animated.View style={[styles.screenAnimated, animatedScreenStyle]}>
+          <ActiveScreen
+            route={{ params: { character } }}
+            navigation={navigation}
+            onCharacterChange={(updatedCharacter) => {
+              const nextCharacter = updatedCharacter instanceof Character
+                ? updatedCharacter
+                : new Character(updatedCharacter);
+              setCharacterState(nextCharacter);
+              navigation.setParams({ character: nextCharacter });
+            }}
+            onRegisterActions={(actions) => {
+              if (actions.openRest)    setRestCallback(() => actions.openRest);
+              if (actions.openLevelUp) setLevelUpCallback(() => actions.openLevelUp);
+              if (actions.openLevelDown) setLevelDownCallback(() => actions.openLevelDown);
+              if (actions.openAddTile) setAddTileCallback(() => actions.openAddTile);
+              if (actions.openManageFeats) setManageFeatsCallback(() => actions.openManageFeats);
+              if (actions.openToggleUnarmedStrike) setToggleUnarmedStrikeCallback(() => actions.openToggleUnarmedStrike);
+            }}
+          />
+        </Animated.View>
       </View>
 
       {/* CHARACTER MENU MODAL */}
@@ -381,6 +472,16 @@ const handleSaveCustomWeapon = async () => {
     <Text style={styles.menuItemText}>Level Up</Text>
   </TouchableOpacity>
 
+  <View style={styles.menuDivider} />
+
+  <TouchableOpacity
+    style={styles.menuItem}
+    onPress={() => { setMenuVisible(false); setTimeout(() => levelDownCallback?.(), 300); }}
+  >
+    <Ionicons name="arrow-down-circle" size={20} color={colors.warning} />
+    <Text style={styles.menuItemText}>Level Down</Text>
+  </TouchableOpacity>
+
 
 
   <View style={styles.menuDivider} />
@@ -391,6 +492,36 @@ const handleSaveCustomWeapon = async () => {
   >
     <Ionicons name="moon" size={20} color={colors.accentSoft} />
     <Text style={styles.menuItemText}>Take a Rest</Text>
+  </TouchableOpacity>
+
+  <View style={styles.menuDivider} />
+
+  <TouchableOpacity
+    style={styles.menuItem}
+    onPress={() => { setMenuVisible(false); setTimeout(() => addTileCallback?.(), 300); }}
+  >
+    <Ionicons name="add-circle-outline" size={20} color={colors.accent2} />
+    <Text style={styles.menuItemText}>Add Tile</Text>
+  </TouchableOpacity>
+
+  <View style={styles.menuDivider} />
+
+  <TouchableOpacity
+    style={styles.menuItem}
+    onPress={() => { setMenuVisible(false); setTimeout(() => manageFeatsCallback?.(), 300); }}
+  >
+    <Ionicons name="ribbon-outline" size={20} color={colors.accentSoft} />
+    <Text style={styles.menuItemText}>Manage Feats</Text>
+  </TouchableOpacity>
+
+  <View style={styles.menuDivider} />
+
+  <TouchableOpacity
+    style={styles.menuItem}
+    onPress={() => { setMenuVisible(false); setTimeout(() => toggleUnarmedStrikeCallback?.(), 300); }}
+  >
+    <Ionicons name="hand-left-outline" size={20} color={colors.accentSoft} />
+    <Text style={styles.menuItemText}>Hide/Show Unarmed Strike</Text>
   </TouchableOpacity>
 
   <View style={styles.menuDivider} />
@@ -470,6 +601,9 @@ const styles = StyleSheet.create({
   screenContainer: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  screenAnimated: {
+    flex: 1,
   },
   menuBox: {
     position: 'absolute',

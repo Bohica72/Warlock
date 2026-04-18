@@ -1,9 +1,11 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View, Text, ScrollView, StyleSheet,
   TouchableOpacity, Modal, TextInput
 } from 'react-native';
-import { saveCharacter } from '../utils/CharacterStore';
+import { useFocusEffect } from '@react-navigation/native';
+import { patchCharacter } from '../utils/CharacterStore';
+import { getEquippedBonuses } from '../utils/BonusEngine';
 import { colors, spacing, radius, typography, shadows, sharedStyles } from '../styles/theme';
 
 const ABILITIES = [
@@ -16,24 +18,24 @@ const ABILITIES = [
 ];
 
 const SKILLS = [
-  { key: 'athletics',      label: 'Athletics',       ability: 'str' },
   { key: 'acrobatics',     label: 'Acrobatics',       ability: 'dex' },
-  { key: 'sleightofhand',  label: 'Sleight of Hand',  ability: 'dex' },
-  { key: 'stealth',        label: 'Stealth',          ability: 'dex' },
-  { key: 'arcana',         label: 'Arcana',           ability: 'int' },
-  { key: 'history',        label: 'History',          ability: 'int' },
-  { key: 'investigation',  label: 'Investigation',    ability: 'int' },
-  { key: 'nature',         label: 'Nature',           ability: 'int' },
-  { key: 'religion',       label: 'Religion',         ability: 'int' },
   { key: 'animalhandling', label: 'Animal Handling',  ability: 'wis' },
-  { key: 'insight',        label: 'Insight',          ability: 'wis' },
-  { key: 'medicine',       label: 'Medicine',         ability: 'wis' },
-  { key: 'perception',     label: 'Perception',       ability: 'wis' },
-  { key: 'survival',       label: 'Survival',         ability: 'wis' },
+  { key: 'arcana',         label: 'Arcana',           ability: 'int' },
+  { key: 'athletics',      label: 'Athletics',        ability: 'str' },
   { key: 'deception',      label: 'Deception',        ability: 'cha' },
+  { key: 'history',        label: 'History',          ability: 'int' },
+  { key: 'insight',        label: 'Insight',          ability: 'wis' },
   { key: 'intimidation',   label: 'Intimidation',     ability: 'cha' },
+  { key: 'investigation',  label: 'Investigation',    ability: 'int' },
+  { key: 'medicine',       label: 'Medicine',         ability: 'wis' },
+  { key: 'nature',         label: 'Nature',           ability: 'int' },
+  { key: 'perception',     label: 'Perception',       ability: 'wis' },
   { key: 'performance',    label: 'Performance',      ability: 'cha' },
   { key: 'persuasion',     label: 'Persuasion',       ability: 'cha' },
+  { key: 'religion',       label: 'Religion',         ability: 'int' },
+  { key: 'sleightofhand',  label: 'Sleight of Hand',  ability: 'dex' },
+  { key: 'stealth',        label: 'Stealth',          ability: 'dex' },
+  { key: 'survival',       label: 'Survival',         ability: 'wis' },
 ];
 
 function formatBonus(n) {
@@ -70,9 +72,23 @@ export default function SkillsScreen({ route }) {
     skills:    [...(character.proficiencies?.skills    ?? [])],
     expertise: [...(character.proficiencies?.expertise ?? [])],
   });
+  const [saveProfs, setSaveProfs] = useState([...(character.proficiencies?.saves ?? [])]);
   const [modalVisible, setModalVisible] = useState(false);
   const editingSkillRef                 = useRef(null);
   const [abilityInput, setAbilityInput] = useState('');
+
+  useFocusEffect(
+    useCallback(() => {
+      setAbilities({ ...character.abilities });
+      setSkillProfs({
+        skills: [...(character.proficiencies?.skills ?? [])],
+        expertise: [...(character.proficiencies?.expertise ?? [])],
+      });
+      setSaveProfs([...(character.proficiencies?.saves ?? [])]);
+    }, [character])
+  );
+
+  const equippedBonuses = getEquippedBonuses(character.inventory ?? [], character.customItems ?? []);
 
   // Derive skill bonus using local state
   const getSkillBonus = (skillKey, abilityKey) => {
@@ -88,7 +104,8 @@ export default function SkillsScreen({ route }) {
       : state === 'proficient'
         ? character.proficiencyBonus
         : 0;
-    return mod + profBonus;
+    const itemBonus = equippedBonuses.bonusSkills?.[skillKey] ?? 0;
+    return mod + profBonus + itemBonus;
   };
 
   const getAbilityScore = (abilityKey) => abilities[abilityKey] ?? 10;
@@ -96,16 +113,24 @@ export default function SkillsScreen({ route }) {
 
   const getSaveBonus = (abilityKey) => {
     const mod        = getAbilityMod(abilityKey);
-    const proficient = character.proficiencies?.saves?.includes(abilityKey);
-    return mod + (proficient ? character.proficiencyBonus : 0);
+    const proficient = saveProfs.includes(abilityKey);
+    const itemBonus  = equippedBonuses.bonusSaves?.[abilityKey] ?? 0;
+    return mod + (proficient ? character.proficiencyBonus : 0) + itemBonus;
   };
 
   // Persist changes to character and storage
   const persist = async (newAbilities, newSkillProfs) => {
+    const nextProficiencies = {
+      ...(character.proficiencies ?? {}),
+      skills: newSkillProfs.skills,
+      expertise: newSkillProfs.expertise,
+    };
     character.abilities                    = newAbilities;
-    character.proficiencies.skills         = newSkillProfs.skills;
-    character.proficiencies.expertise      = newSkillProfs.expertise;
-    await saveCharacter(character);
+    character.proficiencies                = nextProficiencies;
+    await patchCharacter(character.id, {
+      abilities: newAbilities,
+      proficiencies: nextProficiencies,
+    });
   };
 
   // Long-press a skill — open edit modal
@@ -159,6 +184,20 @@ export default function SkillsScreen({ route }) {
     persist(abilities, newSkillProfs);
   };
 
+  const toggleSaveProficiency = async (abilityKey) => {
+    const nextSaves = saveProfs.includes(abilityKey)
+      ? saveProfs.filter((key) => key !== abilityKey)
+      : [...saveProfs, abilityKey];
+
+    setSaveProfs(nextSaves);
+    const nextProficiencies = {
+      ...(character.proficiencies ?? {}),
+      saves: nextSaves,
+    };
+    character.proficiencies = nextProficiencies;
+    await patchCharacter(character.id, { proficiencies: nextProficiencies });
+  };
+
 
   return (
     <ScrollView
@@ -202,14 +241,24 @@ export default function SkillsScreen({ route }) {
 
 
       {/* SAVING THROWS */}
-      <Text style={sharedStyles.sectionHeader}>Saving Throws</Text>
+      <Text style={sharedStyles.sectionHeader}>
+        Saving Throws <Text style={styles.hintText}>(tap to toggle proficiency)</Text>
+      </Text>
       <View style={styles.saveRow}>
         {ABILITIES.map(({ key }) => {
           const bonus      = getSaveBonus(key);
-          const proficient = character.proficiencies?.saves?.includes(key);
+          const proficient = saveProfs.includes(key);
           const acColor    = colors.ability[key];
           return (
-            <View key={key} style={[styles.saveCell, proficient && { borderColor: acColor }]}>
+            <TouchableOpacity
+              key={key}
+              style={[
+                styles.saveCell,
+                proficient && { borderColor: acColor, backgroundColor: `${acColor}22` },
+              ]}
+              onPress={() => toggleSaveProficiency(key)}
+              activeOpacity={0.7}
+            >
               <Text style={[styles.saveDot, { color: proficient ? acColor : colors.textDisabled }]}>
                 {proficient ? '●' : '○'}
               </Text>
@@ -217,7 +266,7 @@ export default function SkillsScreen({ route }) {
               <Text style={[styles.saveBonus, { color: proficient ? acColor : colors.textPrimary }]}>
                 {formatBonus(bonus)}
               </Text>
-            </View>
+            </TouchableOpacity>
           );
         })}
       </View>
@@ -420,6 +469,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: 'bold',
   },
+  itemBonusNote: {
+    color: colors.accent2,
+    fontSize: 10,
+    marginTop: 2,
+    fontWeight: '600',
+  },
 
   // Skills
   hintText: {
@@ -470,6 +525,12 @@ const styles = StyleSheet.create({
     color: colors.gold,
     fontSize: 11,
     fontWeight: 'bold',
+    marginRight: spacing.xs,
+  },
+  skillItemBonus: {
+    color: colors.accent2,
+    fontSize: 10,
+    fontWeight: '600',
     marginRight: spacing.xs,
   },
   skillBonus: {

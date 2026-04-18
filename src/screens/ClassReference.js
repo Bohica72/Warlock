@@ -133,8 +133,8 @@ export default function ClassReference({ character, classData, subclasses }) {
         
         {/* 2. DIAGNOSTIC BADGE: Show exactly what the app sees */}
         {chosenSubclass ? (
-          <Text style={styles.subclassBadge}>
-            ✦ {chosenSubclass.name} features included
+          <Text>
+           
           </Text>
         ) : (
           <Text style={[styles.subclassBadge, { color: colors.textMuted, fontStyle: 'italic' }]}>

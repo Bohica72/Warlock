@@ -4,6 +4,34 @@ import * as FileSystem from 'expo-file-system';
 // Parsed weapon data — populated on first call to loadWeapons()
 let weaponMap = null;
 
+const WEAPON_META = {
+  blowgun: { Type: 'R', Properties: [] },
+  'hand crossbow': { Type: 'R', Properties: ['Light'] },
+  'heavy crossbow': { Type: 'R', Properties: ['Heavy'] },
+  longbow: { Type: 'R', Properties: ['Heavy'] },
+  'light crossbow': { Type: 'R', Properties: [] },
+  dart: { Type: 'R', Properties: ['Finesse'] },
+  shortbow: { Type: 'R', Properties: [] },
+  sling: { Type: 'R', Properties: [] },
+  dagger: { Type: 'M', Properties: ['Finesse'] },
+  rapier: { Type: 'M', Properties: ['Finesse'] },
+  scimitar: { Type: 'M', Properties: ['Finesse', 'Light'] },
+  shortsword: { Type: 'M', Properties: ['Finesse', 'Light'] },
+  whip: { Type: 'M', Properties: ['Finesse', 'Reach'] },
+};
+
+function toTitleCase(value) {
+  return value.replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function normalizeWeaponName(rawName) {
+  if (!rawName) return '';
+  let name = String(rawName).trim();
+  name = name.replace(/^\+\d+\s+/, '');
+  name = name.replace(/\s+\+\d+$/, '');
+  return name.toLowerCase();
+}
+
 export const WEAPON_DAMAGE = {
   battleaxe:      { dice: '1d8',  type: 'slashing' },
   flail:          { dice: '1d8',  type: 'bludgeoning' },
@@ -47,15 +75,28 @@ export const WEAPON_DAMAGE = {
   sling:          { dice: '1d4',  type: 'bludgeoning' },
 };
 
+export const STANDARD_WEAPON_OPTIONS = Object.keys(WEAPON_DAMAGE)
+  .map((key) => ({ key, label: toTitleCase(key) }))
+  .sort((a, b) => a.label.localeCompare(b.label));
+
+export function getWeaponTemplate(rawName) {
+  const baseKey = normalizeWeaponName(rawName);
+  if (!baseKey || !WEAPON_DAMAGE[baseKey]) return null;
+
+  const meta = WEAPON_META[baseKey] ?? { Type: 'M', Properties: [] };
+  return {
+    baseKey,
+    label: toTitleCase(baseKey),
+    BaseItem: `${baseKey}|PHB`,
+    Type: meta.Type,
+    Properties: meta.Properties,
+    ObjectType: 'Weapon',
+  };
+}
+
 export function getWeaponDamageByName(rawName) {
   if (!rawName) return null;
-  let name = String(rawName).trim();
-
-  // Handle "+1 Longsword", "Longsword +1", etc. → "longsword"
-  name = name.replace(/^\+\d+\s+/, '');      // "+1 Longsword" → "Longsword"
-  name = name.replace(/\s+\+\d+$/, '');      // "Longsword +1" → "Longsword"
-
-  const key = name.toLowerCase();
+  const key = normalizeWeaponName(rawName);
   return WEAPON_DAMAGE[key] ?? null;
 }
 

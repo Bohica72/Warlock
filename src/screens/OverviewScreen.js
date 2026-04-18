@@ -4,18 +4,46 @@ import {
   StyleSheet, ScrollView, Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { saveCharacter } from '../utils/CharacterStore';
+import { patchCharacter, saveCharacter } from '../utils/CharacterStore';
 import { getItemByName } from '../utils/ItemStore';
 import { Character } from '../models/Character';
 import { initWeaponStore, getWeaponDamageByName } from '../utils/WeaponStore';
 import { getClassData } from '../data/classes'; 
-import { getFeats } from '../utils/DataLoader';
+import { getFeats, getRaces } from '../utils/DataLoader';
 import { applyFeatEffects, FEAT_EFFECTS } from '../data/featEffects';
 import { formatFeatSummary, meetsPrerequisites } from '../utils/featUtils';
 import {
   colors, spacing, radius, typography,
   shadows, sharedStyles
 } from '../styles/theme';
+
+const DMG_DEBUG_TAG = '[WARLOCK_DMG_DEBUG]';
+const STANDARD_DND_LANGUAGES = [
+  'Common',
+  'Dwarvish',
+  'Elvish',
+  'Giant',
+  'Gnomish',
+  'Goblin',
+  'Halfling',
+  'Orc',
+  'Abyssal',
+  'Celestial',
+  'Draconic',
+  'Deep Speech',
+  'Infernal',
+  'Primordial',
+  'Sylvan',
+  'Undercommon',
+];
+
+function normalizeStringList(values = []) {
+  return [...new Set(
+    values
+      .filter((value) => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim())
+  )].sort((a, b) => a.localeCompare(b));
+}
 
 function rollDie(faces) {
   return Math.floor(Math.random() * faces) + 1;
@@ -61,6 +89,26 @@ export default function OverviewScreen({ route, onRegisterActions }) {
   const [weaponStoreReady, setWeaponStoreReady]           = useState(false);
   const [featDetail, setFeatDetail] = useState(null);
   const [featDetailVisible, setFeatDetailVisible] = useState(false);
+  const [subclassFeatureDetail, setSubclassFeatureDetail] = useState(null);
+  const [subclassFeatureDetailVisible, setSubclassFeatureDetailVisible] = useState(false);
+  const [manualTiles, setManualTiles] = useState(Array.isArray(character.manualTiles) ? character.manualTiles : []);
+  const [manualTileModalVisible, setManualTileModalVisible] = useState(false);
+  const [editingManualTileId, setEditingManualTileId] = useState(null);
+  const [manualTileName, setManualTileName] = useState('');
+  const [manualTileMode, setManualTileMode] = useState('counter');
+  const [manualTileStartValue, setManualTileStartValue] = useState('1');
+  const [manualTileRecharge, setManualTileRecharge] = useState('long');
+  const [languageModalVisible, setLanguageModalVisible] = useState(false);
+  const [selectedLanguages, setSelectedLanguages] = useState(
+    normalizeStringList(Array.isArray(character.languages) ? character.languages : [])
+  );
+  const [showUnarmedStrike, setShowUnarmedStrike] = useState(character.showUnarmedStrike ?? true);
+  const [featManagerVisible, setFeatManagerVisible] = useState(false);
+  const [featPickerVisible, setFeatPickerVisible] = useState(false);
+  const [featSearch, setFeatSearch] = useState('');
+  const [featEditIndex, setFeatEditIndex] = useState(null);
+  const [raceFeatureDetail, setRaceFeatureDetail] = useState(null);
+  const [raceFeatureDetailVisible, setRaceFeatureDetailVisible] = useState(false);
 
   // (Keeping your ASI/Level up states here for brevity...)
   const [asiChoice, setAsiChoice]         = useState(null);   
@@ -70,15 +118,19 @@ export default function OverviewScreen({ route, onRegisterActions }) {
   const [featModalVisible, setFeatModalVisible] = useState(false); 
   const [pendingFeat, setPendingFeat]     = useState(null);
 
+  const ALL_FEATS = useMemo(() => getFeats(), []);
+  const ALL_RACES = useMemo(() => getRaces(), []);
+
   const FEATS_BY_NAME = useMemo(() => {
-  const all = getFeats();
-  return Object.fromEntries(all.map(f => [f.name, f]));
-}, []);
+    return Object.fromEntries(ALL_FEATS.map(f => [f.name, f]));
+  }, [ALL_FEATS]);
 
 
   const breakdownRef        = useRef(null);
   const overrideKeyRef      = useRef(null);
   const selectedEquippedRef = useRef(null);
+  const levelDownActionRef  = useRef(() => {});
+  const dmgDebugLoggedRef   = useRef(new Set());
 
   // 2. RIP OUT HARDCODED VARIABLES
   // Notice we deleted isFighter, isBarbarian, ragesUsed, actionSurgeUsed, etc.!
@@ -88,27 +140,142 @@ export default function OverviewScreen({ route, onRegisterActions }) {
   }, []);
 
   useEffect(() => {
-    onRegisterActions?.({
-      openRest:    () => setRestModalVisible(true),
-      openLevelUp: () => setLevelUpModalVisible(true),
-    });
-  }, []);
+    setSelectedLanguages(
+      normalizeStringList(Array.isArray(character.languages) ? character.languages : [])
+    );
+  }, [character.id, JSON.stringify(character.languages ?? [])]);
 
 const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ?? []) : [];
+
+  const normalizeSignedNumber = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const normalized = value.replace(/[−–—]/g, '-');
+      const match = normalized.match(/[-+]?\d+/);
+      return match ? parseInt(match[0], 10) : 0;
+    }
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const formatSignedNumber = (value) => {
+    const normalized = normalizeSignedNumber(value);
+    return `${normalized >= 0 ? '+' : ''}${normalized}`;
+  };
+
+  const normalizeDamageDie = (value) => {
+    const normalized = String(value ?? '').trim();
+    return normalized.length > 0 ? normalized : '—';
+  };
+
+  const firstNonEmptyString = (...values) => {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+    }
+    return '';
+  };
+
+  const unlockedSubclassFeatures = useMemo(() => {
+    const selectedSubclassId = character.subclassId?.toLowerCase();
+    const currentLevel = parseInt(character.level, 10) || 1;
+    if (!selectedSubclassId) return [];
+
+    const subclass = (classData?.subclasses ?? []).find(
+      (entry) => entry?.id?.toLowerCase() === selectedSubclassId
+    );
+    if (!subclass?.features?.length) return [];
+
+    return subclass.features
+      .filter((feature) => (feature?.level ?? 1) <= currentLevel)
+      .sort((a, b) => (a.level ?? 1) - (b.level ?? 1));
+  }, [classData, character.level, character.subclassId]);
+
+  const selectedRace = useMemo(() => {
+    if (!character.race) return null;
+
+    const exactMatch = ALL_RACES.find((entry) => (
+      entry?.name === character.race &&
+      (!character.raceSource || entry?.source === character.raceSource)
+    ));
+
+    return exactMatch ?? ALL_RACES.find((entry) => entry?.name === character.race) ?? null;
+  }, [ALL_RACES, character.race, character.raceSource]);
+
+  const speciesFeatures = useMemo(() => {
+    const excludedNames = new Set([
+      'Age',
+      'Alignment',
+      'Creature Type',
+      'Language',
+      'Languages',
+      'Size',
+      'Speed',
+    ]);
+
+    return (selectedRace?.traits ?? []).filter((trait) => {
+      const name = trait?.name?.trim();
+      return !!name && !excludedNames.has(name);
+    });
+  }, [selectedRace]);
   
   const equippedAttacks = rawAttacks
     .filter(atk => {
       // NEW THE BOUNCER: Ask the database if this is actually a weapon
-      const staticItem = getItemByName(atk.name);
+      const staticItem = getItemByName(atk.name, character.customItems ?? []);
       const invItem = character.inventory?.find(i => i.itemName === atk.name && i.equipped);
       return staticItem?.ObjectType === 'Weapon' || invItem?.ObjectType === 'Weapon';
     })
     .map(atk => {
-      const dmgInfo = getWeaponDamageByName(atk.name);
+      const weaponLookupName = firstNonEmptyString(atk.baseWeaponName, atk.BaseWeaponName, atk.name);
+      const dmgInfo = getWeaponDamageByName(weaponLookupName);
       const invItem = character.inventory?.find(i => i.itemName === atk.name && i.equipped);
+      const normalizedAttackBonus = normalizeSignedNumber(atk.attackBonus);
+      const normalizedDamageBonus = normalizeSignedNumber(atk.damageBonus);
+      const normalizedFinalDamageBonus = normalizeSignedNumber(atk.finalDamageBonus);
+      const normalizedDamageDie = normalizeDamageDie(dmgInfo?.dice ?? atk.damageDie);
+      const normalizedMagicAttackBonus = normalizeSignedNumber(atk.magicAttackBonus ?? atk.magicBonus);
+      const normalizedMagicDamageBonus = normalizeSignedNumber(atk.magicDamageBonus ?? atk.magicBonus);
+      const normalizedRageBonus = normalizeSignedNumber(atk.appliedRageBonus);
+      const normalizedFeatBonus = normalizeSignedNumber(atk.featDamageBonus);
+
+      const rawFinalDamage = String(atk.finalDamageBonus ?? '');
+      const rawDamageDie = String(atk.damageDie ?? '');
+      const hasArrowGlyph = /[→↦➜➡]/.test(rawFinalDamage);
+      const changedByNormalization = rawFinalDamage !== String(normalizedFinalDamageBonus);
+      const missingDamageDie = normalizedDamageDie === '—';
+      if (hasArrowGlyph || changedByNormalization || missingDamageDie) {
+        const logKey = `${atk.name ?? 'unknown'}|${rawFinalDamage}|${normalizedFinalDamageBonus}|${normalizedDamageDie}`;
+        if (!dmgDebugLoggedRef.current.has(logKey)) {
+          const anomalyPayload = {
+            attackName: atk.name,
+            baseWeaponName: weaponLookupName,
+            rawDamageDie,
+            normalizedDamageDie,
+            rawFinalDamageBonus: atk.finalDamageBonus,
+            normalizedFinalDamageBonus,
+            rawAttackBonus: atk.attackBonus,
+            rawDamageBonus: atk.damageBonus,
+            rawMagicAttackBonus: atk.magicAttackBonus ?? atk.magicBonus,
+            rawMagicDamageBonus: atk.magicDamageBonus ?? atk.magicBonus,
+            damageLookupFound: !!dmgInfo,
+            inventoryEntry: invItem,
+          };
+          console.warn(`${DMG_DEBUG_TAG} [Overview DMG anomaly]`, anomalyPayload);
+          console.log(`${DMG_DEBUG_TAG} [Overview DMG anomaly] ${JSON.stringify(anomalyPayload)}`);
+          dmgDebugLoggedRef.current.add(logKey);
+        }
+      }
+
       return {
         ...atk,
-        damageDie: dmgInfo ? dmgInfo.dice : (atk.damageDie ?? '—'),
+        attackBonus: normalizedAttackBonus,
+        damageBonus: normalizedDamageBonus,
+        finalDamageBonus: normalizedFinalDamageBonus,
+        magicAttackBonus: normalizedMagicAttackBonus,
+        magicDamageBonus: normalizedMagicDamageBonus,
+        appliedRageBonus: normalizedRageBonus,
+        featDamageBonus: normalizedFeatBonus,
+        damageDie: normalizedDamageDie,
         damageType: dmgInfo ? dmgInfo.type : '',
         extraDamageDie: invItem?.extraDamageDie,
         extraDamageType: invItem?.extraDamageType,
@@ -121,14 +288,171 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
   const hpPercent   = Math.max(0, hpCurrent / character.hpMax);
   const equippedItems = (character.inventory ?? []).filter(i => {
     if (!i.equipped) return false;
-    const staticItem = getItemByName(i.itemName);
+    const staticItem = getItemByName(i.itemName, character.customItems ?? []);
     const isWeapon = staticItem?.ObjectType === 'Weapon' || i.ObjectType === 'Weapon';
     return !isWeapon;
   });
+  const shouldShowEquippedItems = false;
 
   const persist = async (updates) => {
     Object.assign(character, updates);
     await saveCharacter(character);
+  };
+
+  const persistManualTiles = (nextTiles) => {
+    setManualTiles(nextTiles);
+    character.manualTiles = nextTiles;
+    persist({ manualTiles: nextTiles });
+  };
+
+  const toggleLanguageSelection = (language) => {
+    const nextLanguages = selectedLanguages.includes(language)
+      ? selectedLanguages.filter((entry) => entry !== language)
+      : normalizeStringList([...selectedLanguages, language]);
+
+    setSelectedLanguages(nextLanguages);
+    character.languages = nextLanguages;
+    persist({ languages: nextLanguages });
+  };
+
+  const toggleUnarmedStrikeVisibility = () => {
+    const next = !showUnarmedStrike;
+    setShowUnarmedStrike(next);
+    character.showUnarmedStrike = next;
+    persist({ showUnarmedStrike: next });
+  };
+
+  const applyManualTileRecharge = (restType, sourceTiles = []) => {
+    return sourceTiles.map((tile) => {
+      if (!tile?.recharge) return tile;
+      const shouldRecharge = tile.recharge === restType || (restType === 'long' && tile.recharge === 'short');
+      if (!shouldRecharge) return tile;
+
+      if (tile.mode === 'toggle') {
+        return { ...tile, isActive: restType === 'long' ? true : false };
+      }
+
+      const start = Math.max(0, parseInt(tile.startingValue, 10) || 0);
+      return { ...tile, currentValue: start };
+    });
+  };
+
+  const resetManualTileForm = () => {
+    setEditingManualTileId(null);
+    setManualTileName('');
+    setManualTileMode('counter');
+    setManualTileStartValue('1');
+    setManualTileRecharge('long');
+  };
+
+  const openManualTileCreator = () => {
+    resetManualTileForm();
+    setManualTileModalVisible(true);
+  };
+
+  const openManualTileEditor = (tile) => {
+    setEditingManualTileId(tile.id);
+    setManualTileName(tile.name ?? '');
+    setManualTileMode(tile.mode === 'toggle' ? 'toggle' : 'counter');
+    setManualTileStartValue(String(tile.startingValue ?? tile.currentValue ?? 1));
+    setManualTileRecharge(tile.recharge === 'short' ? 'short' : 'long');
+    setManualTileModalVisible(true);
+  };
+
+  const saveManualTile = () => {
+    const trimmedName = manualTileName.trim();
+    if (!trimmedName) {
+      Alert.alert('Missing Name', 'Please provide a tile name.');
+      return;
+    }
+
+    if (manualTileMode === 'counter') {
+      const parsed = parseInt(manualTileStartValue, 10);
+      if (Number.isNaN(parsed) || parsed < 0) {
+        Alert.alert('Invalid Value', 'Starting value must be 0 or greater.');
+        return;
+      }
+    }
+
+    const startValue = Math.max(0, parseInt(manualTileStartValue, 10) || 0);
+
+    const nextTiles = editingManualTileId
+      ? manualTiles.map((tile) => {
+          if (tile.id !== editingManualTileId) return tile;
+          if (manualTileMode === 'toggle') {
+            return {
+              ...tile,
+              name: trimmedName,
+              mode: 'toggle',
+              recharge: manualTileRecharge,
+              isActive: !!tile.isActive,
+            };
+          }
+          return {
+            ...tile,
+            name: trimmedName,
+            mode: 'counter',
+            recharge: manualTileRecharge,
+            startingValue: startValue,
+            currentValue: Math.min(startValue, Math.max(0, parseInt(tile.currentValue, 10) || startValue)),
+          };
+        })
+      : [
+          ...manualTiles,
+          manualTileMode === 'toggle'
+            ? {
+                id: `manual_${Date.now()}`,
+                name: trimmedName,
+                mode: 'toggle',
+                recharge: manualTileRecharge,
+                isActive: false,
+              }
+            : {
+                id: `manual_${Date.now()}`,
+                name: trimmedName,
+                mode: 'counter',
+                recharge: manualTileRecharge,
+                startingValue: startValue,
+                currentValue: startValue,
+              },
+        ];
+
+    persistManualTiles(nextTiles);
+    setManualTileModalVisible(false);
+    resetManualTileForm();
+  };
+
+  const handleManualTilePress = (tile) => {
+    const nextTiles = manualTiles.map((entry) => {
+      if (entry.id !== tile.id) return entry;
+      if (entry.mode === 'toggle') {
+        return { ...entry, isActive: !entry.isActive };
+      }
+      const current = Math.max(0, parseInt(entry.currentValue, 10) || 0);
+      return { ...entry, currentValue: Math.max(0, current - 1) };
+    });
+
+    persistManualTiles(nextTiles);
+    setRefreshTrigger(prev => prev + 1);
+  };
+
+  const handleManualTileLongPress = (tile) => {
+    Alert.alert(
+      tile.name,
+      'Manage this tile',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Edit', onPress: () => openManualTileEditor(tile) },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            const nextTiles = manualTiles.filter((entry) => entry.id !== tile.id);
+            persistManualTiles(nextTiles);
+          },
+        },
+      ]
+    );
   };
 
  const hpBarColor = hpPercent > 0.5
@@ -199,6 +523,9 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
   // 3. SIMPLIFIED REST ENGINE
   const doShortRest = () => {
     character.takeRest('short'); // The engine does the math
+    const nextManualTiles = applyManualTileRecharge('short', manualTiles);
+    character.manualTiles = nextManualTiles;
+    setManualTiles(nextManualTiles);
     persist(character.toJSON());
     setRefreshTrigger(prev => prev + 1); // Refresh the UI
     
@@ -208,6 +535,9 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
 
   const doLongRest = () => {
     character.takeRest('long'); // The engine does the math
+    const nextManualTiles = applyManualTileRecharge('long', manualTiles);
+    character.manualTiles = nextManualTiles;
+    setManualTiles(nextManualTiles);
     
     // Update local React state for top-level UI elements
     setHpCurrent(character.hpCurrent);
@@ -239,6 +569,9 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     const parts = [];
     if (item.BonusAC)     parts.push(`+${item.BonusAC} AC`);
     if (item.BonusWeapon) parts.push(`+${item.BonusWeapon} ATK/DMG`);
+    if (item.BonusDamage) parts.push(`+${item.BonusDamage} DMG`);
+    if (item.BonusSaves?.length)  parts.push(`+${item.BonusSaveValue ?? 1} saves`);
+    if (item.BonusSkills?.length) parts.push(`+${item.BonusSkillValue ?? 1} skills`);
     if (item.BonusStr)    parts.push(`+${item.BonusStr} STR`);
     if (item.BonusDex)    parts.push(`+${item.BonusDex} DEX`);
     if (item.BonusCon)    parts.push(`+${item.BonusCon} CON`);
@@ -250,6 +583,156 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     return parts.length > 0 ? parts.join(', ') : null;
   };
 
+  const getFeatName = (feat) => (typeof feat === 'string' ? feat : feat?.name);
+
+  const isToughFeat = (feat) => getFeatName(feat) === 'Tough';
+
+  const getToughAppliedLevel = (feat) => {
+    if (!feat || typeof feat !== 'object') return null;
+    const appliedLevel = parseInt(feat.hpBonusAppliedLevel, 10);
+    return Number.isFinite(appliedLevel) && appliedLevel > 0 ? appliedLevel : null;
+  };
+
+  const getToughTotalBonus = (feat, fallbackLevel = character.level) => {
+    const appliedLevel = getToughAppliedLevel(feat) ?? (parseInt(fallbackLevel, 10) || 1);
+    return appliedLevel * 2;
+  };
+
+  const applyHpDelta = (delta) => {
+    if (!delta) return;
+    const currentMax = parseInt(character.hpMax, 10) || 0;
+    const currentHp = parseInt(character.hpCurrent, 10) || 0;
+    const nextHpMax = Math.max(1, currentMax + delta);
+    const nextHpCurrent = Math.max(0, Math.min(nextHpMax, currentHp + delta));
+
+    character.hpMax = nextHpMax;
+    character.hpCurrent = nextHpCurrent;
+    setHpCurrent(nextHpCurrent);
+
+    return { hpMax: nextHpMax, hpCurrent: nextHpCurrent };
+  };
+
+  const updateFeats = (nextFeats, extraUpdates = {}) => {
+    character.feats = nextFeats;
+    Object.assign(character, extraUpdates);
+    if (extraUpdates.hpCurrent != null) setHpCurrent(extraUpdates.hpCurrent);
+    persist({ feats: nextFeats, ...extraUpdates });
+    setRefreshTrigger(prev => prev + 1);
+  };
+
+  useEffect(() => {
+    const currentFeats = Array.isArray(character.feats) ? character.feats : [];
+    const toughIndex = currentFeats.findIndex(isToughFeat);
+    if (toughIndex < 0) return;
+
+    const toughFeat = currentFeats[toughIndex];
+    if (getToughAppliedLevel(toughFeat)) return;
+
+    const currentLevel = parseInt(character.level, 10) || 1;
+    const toughBonus = currentLevel * 2;
+    const hpUpdates = applyHpDelta(toughBonus);
+    const nextFeats = [...currentFeats];
+    const baseEntry = typeof toughFeat === 'object'
+      ? toughFeat
+      : { name: getFeatName(toughFeat), takenAtLevel: 1 };
+
+    nextFeats[toughIndex] = {
+      ...baseEntry,
+      hpBonusAppliedLevel: currentLevel,
+    };
+
+    updateFeats(nextFeats, hpUpdates ?? {});
+  }, [character.id, character.level, JSON.stringify(character.feats ?? [])]);
+
+  const removeFeatAt = (index) => {
+    const current = [...(character.feats ?? [])];
+    const featName = getFeatName(current[index]) ?? 'this feat';
+    Alert.alert(
+      'Remove Feat',
+      `Remove ${featName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            const removedFeat = current[index];
+            current.splice(index, 1);
+            const hpUpdates = isToughFeat(removedFeat)
+              ? applyHpDelta(-getToughTotalBonus(removedFeat))
+              : null;
+            updateFeats(current, hpUpdates ?? {});
+          },
+        },
+      ]
+    );
+  };
+
+  const openFeatPicker = (index = null) => {
+    setFeatEditIndex(index);
+    setFeatSearch('');
+    setFeatPickerVisible(true);
+  };
+
+  const selectFeatFromPicker = (feat) => {
+    const featName = feat?.name;
+    if (!featName) return;
+
+    const current = [...(character.feats ?? [])];
+    const duplicateAt = current.findIndex((entry, idx) => getFeatName(entry) === featName && idx !== featEditIndex);
+    if (duplicateAt >= 0) {
+      Alert.alert('Already Added', `${featName} is already on this character.`);
+      return;
+    }
+
+    const existing = featEditIndex != null ? current[featEditIndex] : null;
+    let nextEntry = {
+      name: feat.name,
+      source: feat.source,
+      takenAtLevel: typeof existing === 'object' && existing?.takenAtLevel != null
+        ? existing.takenAtLevel
+        : (parseInt(character.level, 10) || 1),
+    };
+
+    let hpUpdates = null;
+
+    if (isToughFeat(existing) && !isToughFeat(feat)) {
+      hpUpdates = applyHpDelta(-getToughTotalBonus(existing));
+    } else if (!isToughFeat(existing) && isToughFeat(feat)) {
+      const currentLevel = parseInt(character.level, 10) || 1;
+      hpUpdates = applyHpDelta(currentLevel * 2);
+      nextEntry = {
+        ...nextEntry,
+        hpBonusAppliedLevel: currentLevel,
+      };
+    } else if (isToughFeat(existing) && isToughFeat(feat)) {
+      nextEntry = {
+        ...nextEntry,
+        hpBonusAppliedLevel: getToughAppliedLevel(existing) ?? (parseInt(character.level, 10) || 1),
+      };
+    }
+
+    if (featEditIndex != null && featEditIndex >= 0 && featEditIndex < current.length) {
+      current[featEditIndex] = nextEntry;
+    } else {
+      current.push(nextEntry);
+    }
+
+    updateFeats(current, hpUpdates ?? {});
+    setFeatPickerVisible(false);
+    setFeatEditIndex(null);
+    setFeatSearch('');
+  };
+
+  const filteredFeats = useMemo(() => {
+    const query = featSearch.trim().toLowerCase();
+    if (!query) return ALL_FEATS;
+    return ALL_FEATS.filter((feat) =>
+      feat.name?.toLowerCase().includes(query) ||
+      feat.source?.toLowerCase().includes(query)
+    );
+  }, [ALL_FEATS, featSearch]);
+
   const doLevelUp = async () => {
     const calc = calcLevelUp();
     if (!calc) return;
@@ -258,10 +741,13 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     const oldInvocations = character.getMaxInvocations();
     const newInvocations = classData?.levels?.[newLevel]?.invocations ?? oldInvocations;
     const gainedInvocations = Math.max(0, newInvocations - oldInvocations);
+    const alreadyHasTough = (character.feats ?? []).some(isToughFeat);
+    const gainsToughThisLevel = asiChoice === 'feat' && selectedFeat?.name === 'Tough' && !alreadyHasTough;
+    const toughHpGain = gainsToughThisLevel ? newLevel * 2 : (alreadyHasTough ? 2 : 0);
 
     // 1. Calculate new values using the character engine directly
     const safeHpCurrent     = parseInt(character.hpCurrent, 10) || 10;
-    const newHpCurrent      = safeHpCurrent + hpIncrease;
+    const newHpCurrent      = safeHpCurrent + hpIncrease + toughHpGain;
     const safeDiceRemaining = parseInt(character.hitDiceRemaining, 10) || 1;
     const newDiceRemaining  = safeDiceRemaining + 1;
 
@@ -269,6 +755,11 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     let updatedAbilities    = { ...character.abilities };
     let updatedFeats        = [...(character.feats ?? [])];
     let updatedProficiencies = { ...character.proficiencies };
+
+    const snapshotBeforeLevel = JSON.parse(JSON.stringify(character.toJSON()));
+    const nextSnapshots = Array.isArray(character.levelSnapshots)
+      ? [...character.levelSnapshots, snapshotBeforeLevel]
+      : [snapshotBeforeLevel];
 
     // Apply ASI (Ability Score Improvement)
     if (asiChoice === 'asi' && asiStats.length > 0) {
@@ -294,20 +785,35 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
         name:        selectedFeat.name,
         source:      selectedFeat.source,
         takenAtLevel: newLevel,
+        ...(selectedFeat.name === 'Tough' ? { hpBonusAppliedLevel: newLevel } : {}),
+      });
+    }
+
+    if (alreadyHasTough) {
+      updatedFeats = updatedFeats.map((feat) => {
+        if (!isToughFeat(feat)) return feat;
+        if (typeof feat !== 'object') {
+          return { name: feat, takenAtLevel: 1, hpBonusAppliedLevel: newLevel };
+        }
+        return { ...feat, hpBonusAppliedLevel: newLevel };
       });
     }
 
     // 2. Update character instance directly
     character.level            = newLevel;
-    character.hpMax            = newHpMax;
+    character.hpMax            = newHpMax + toughHpGain;
     character.hpCurrent        = newHpCurrent;
     character.hitDiceRemaining = newDiceRemaining;
     character.proficiencyBonus = newProfBonus;
     character.abilities        = updatedAbilities;
     character.feats            = updatedFeats;
     character.proficiencies    = updatedProficiencies;
+    character.levelSnapshots   = nextSnapshots;
 
     // 3. Save to database and trigger UI refresh
+  setHpCurrent(newHpCurrent);
+  setHitDiceRemaining(newDiceRemaining);
+  setCharacterLevel(newLevel);
     await persist(character.toJSON());
     setRefreshTrigger(prev => prev + 1);
 
@@ -323,14 +829,64 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     if (isWarlockInvocationGain) {
       navigation.navigate('InvocationPicker', {
         character,
-        onSave: (list) => {
+        onSave: async (list) => {
           character.knownInvocations = list;
-          saveCharacter(character);
+          await patchCharacter(character.id, { knownInvocations: list });
           setRefreshTrigger(prev => prev + 1);
         }
       });
     }
   };
+
+  const doLevelDown = async () => {
+    const snapshots = Array.isArray(character.levelSnapshots) ? character.levelSnapshots : [];
+    if (snapshots.length === 0) {
+      Alert.alert('No Previous Level', 'There is no saved level-up state to revert to.');
+      return;
+    }
+
+    const previousState = snapshots[snapshots.length - 1];
+    const remainingSnapshots = snapshots.slice(0, -1);
+    const restoredCharacter = new Character({
+      ...previousState,
+      levelSnapshots: remainingSnapshots,
+    });
+
+    await persist(restoredCharacter.toJSON());
+
+    setHpCurrent(restoredCharacter.hpCurrent);
+    setHpTemp(restoredCharacter.hpTemp ?? 0);
+    setHitDiceRemaining(restoredCharacter.hitDiceRemaining ?? restoredCharacter.level);
+    setInspiration(restoredCharacter.inspiration ?? 0);
+    setCharacterLevel(parseInt(restoredCharacter.level, 10) || 1);
+    setRefreshTrigger(prev => prev + 1);
+
+    Alert.alert('Level Down', `Reverted to level ${restoredCharacter.level}.`);
+  };
+
+  useEffect(() => {
+    levelDownActionRef.current = doLevelDown;
+  });
+
+  useEffect(() => {
+    onRegisterActions?.({
+      openRest:    () => setRestModalVisible(true),
+      openLevelUp: () => setLevelUpModalVisible(true),
+      openAddTile: () => openManualTileCreator(),
+      openManageFeats: () => setFeatManagerVisible(true),
+      openToggleUnarmedStrike: () => toggleUnarmedStrikeVisibility(),
+      openLevelDown: () => {
+        Alert.alert(
+          'Level Down',
+          'Revert to your previous level state?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Revert', style: 'destructive', onPress: () => levelDownActionRef.current?.() },
+          ]
+        );
+      },
+    });
+  }, [showUnarmedStrike]);
 
   const calcLevelUp = () => {
     const currentLevel = parseInt(character.level, 10) || 1;
@@ -365,8 +921,48 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     <View style={{ flex: 1 }}>
       <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 80 }}>
         
-        {/* TOP ROW: HP + HIT DICE (Stays identical) */}
-        {/* ... */}
+        {/* TOP ROW: HP + HIT DICE */}
+        <View style={styles.topRow}>
+          <TouchableOpacity
+            style={styles.hpBarContainer}
+            onPress={() => setHpModalVisible(true)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.hpBarHeader}>
+              <Text style={styles.hpBarLabel}>HIT POINTS</Text>
+              <Text style={styles.hpBarValue}>
+                {hpCurrent}
+                <Text style={styles.hpBarMax}> / {character.hpMax}</Text>
+              </Text>
+            </View>
+
+            <View style={styles.hpBarTrack}>
+              <View
+                style={[
+                  styles.hpBarFill,
+                  {
+                    width: `${Math.min(100, Math.max(0, hpPercent * 100))}%`,
+                    backgroundColor: hpBarColor,
+                  },
+                ]}
+              />
+            </View>
+
+            {hpTemp > 0 ? <Text style={styles.hpTempBadge}>+{hpTemp} Temp HP</Text> : null}
+          </TouchableOpacity>
+
+          <View style={styles.topRightCol}>
+            <TouchableOpacity
+              style={styles.hitDiceCard}
+              onPress={() => setHitDiceModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.cardLabel}>HIT DICE</Text>
+              <Text style={styles.cardValue}>{hitDiceRemaining}</Text>
+              <Text style={styles.cardSub}>d{hitDieFaces} remaining</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* 5. THE NEW DYNAMIC STATS GRID */}
         <View style={styles.grid}>
@@ -378,6 +974,17 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
             { label: 'Speed', value: `${character.overrides?.speed ?? character.speed}ft`, color: character.overrides?.speed ? colors.gold : colors.accentSoft, onLongPress: () => { overrideKeyRef.current = 'speed'; setOverrideInput(String(character.overrides?.speed ?? character.speed)); setOverrideModalVisible(true); }},
             { label: 'Pass. Perc', value: character.getPassivePerception(), color: colors.accentSoft },
             { label: 'Inspiration', value: inspiration ? '✦' : '—', color: colors.gold, onPress: () => { const newVal = inspiration ? 0 : 1; setInspiration(newVal); persist({ inspiration: newVal }); }},
+            ...manualTiles.map((tile) => ({
+              label: tile.name,
+              value: tile.mode === 'toggle'
+                ? (tile.isActive ? '✦' : '—')
+                : String(Math.max(0, parseInt(tile.currentValue, 10) || 0)),
+              color: tile.mode === 'toggle'
+                ? (tile.isActive ? colors.gold : colors.accentSoft)
+                : ((Math.max(0, parseInt(tile.currentValue, 10) || 0) > 0) ? colors.accentSoft : colors.textMuted),
+              onPress: () => handleManualTilePress(tile),
+              onLongPress: () => handleManualTileLongPress(tile),
+            })),
             
             // 6. DYNAMIC RESOURCES INJECTED HERE
             ...character.getCombatResources().map(res => {
@@ -448,7 +1055,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
 
 
         {/* ATTACKS */}
-        {(() => {
+        {showUnarmedStrike && (() => {
           const unarmed = character.getUnarmedAttack();
           if (!unarmed) return null;
           
@@ -481,7 +1088,9 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
               </View>
               <View style={styles.attackStatCol}>
                 <Text style={styles.attackStatLabel}>ATK</Text>
-                <Text style={styles.attackStat}>+{unarmed.attackBonus}</Text>
+                <Text style={styles.attackStat}>
+                  {(unarmed.attackBonus ?? 0) >= 0 ? '+' : ''}{unarmed.attackBonus ?? 0}
+                </Text>
               </View>
               <View style={styles.attackStatCol}>
                 <Text style={styles.attackStatLabel}>DMG</Text>
@@ -502,10 +1111,12 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
               breakdownRef.current = {
                 type:             'attack',
                 name:             atk.name,
-                strMod:           atk.strMod,
+                abilityKey:       atk.abilityKey,
+                abilityMod:       atk.abilityMod,
                 profBonus:        character.proficiencyBonus,
                 isProficient:     atk.isProficient,
-                magicBonus:       atk.magicBonus,
+                magicAttackBonus: atk.magicAttackBonus ?? atk.magicBonus ?? 0,
+                magicDamageBonus: atk.magicDamageBonus ?? atk.magicBonus ?? 0,
                 attackTotal:      atk.attackBonus,
                 damageDie:        atk.damageDie,
                 damageBonus:      atk.damageBonus, 
@@ -524,7 +1135,9 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
             </View>
             <View style={styles.attackStatCol}>
               <Text style={styles.attackStatLabel}>ATK</Text>
-              <Text style={styles.attackStat}>+{atk.attackBonus}</Text>
+              <Text style={styles.attackStat}>
+                {(atk.attackBonus ?? 0) >= 0 ? '+' : ''}{atk.attackBonus ?? 0}
+              </Text>
             </View>
             <View style={styles.attackStatCol}>
               <Text style={styles.attackStatLabel}>DMG</Text>
@@ -547,12 +1160,15 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
        {/* ACTIVE FEATS */}
 {(character.feats?.length ?? 0) > 0 && (
   <View style={{ marginTop: spacing.lg }}>
+    <Text style={sharedStyles.sectionHeader}>FEATS</Text>
     {character.feats.map((feat, i) => {
-      const full = FEATS_BY_NAME[feat.name];
+      const featName = getFeatName(feat);
+      if (!featName) return null;
+      const full = FEATS_BY_NAME[featName];
       return (
               
         <TouchableOpacity
-          key={`${feat.name}-${i}`}
+          key={`${featName}-${i}`}
           style={styles.featChip}
           delayLongPress={400}
           activeOpacity={0.7}
@@ -562,7 +1178,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
           }}
         >
           <View style={{ flex: 1 }}>
-            <Text style={styles.featChipName}>{feat.name}</Text>
+            <Text style={styles.featChipName}>{featName}</Text>
             {full && (
               <Text style={styles.featChipMeta} numberOfLines={1}>
                 {formatFeatSummary(full)}
@@ -576,38 +1192,127 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
   </View>
 )}
 
+{speciesFeatures.length > 0 && (
+  <View style={{ marginTop: spacing.sm }}>
+    <Text style={sharedStyles.sectionHeader}>
+      {selectedRace?.name ?? character.race ?? 'Species'} Features
+    </Text>
+    {speciesFeatures.map((feature, i) => (
+      <TouchableOpacity
+        key={`${feature.name}-${i}`}
+        style={styles.featChip}
+        delayLongPress={400}
+        activeOpacity={0.7}
+        onLongPress={() => {
+          setRaceFeatureDetail(feature);
+          setRaceFeatureDetailVisible(true);
+        }}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={styles.featChipName}>{feature.name}</Text>
+          {!!selectedRace?.name && (
+            <Text style={styles.featChipMeta} numberOfLines={1}>
+              {selectedRace.name}{selectedRace.source ? ` · ${selectedRace.source}` : ''}
+            </Text>
+          )}
+        </View>
+        <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+      </TouchableOpacity>
+    ))}
+  </View>
+)}
+
 
        
         
 
         {/* EQUIPPED ITEMS */}
-        <Text style={sharedStyles.sectionHeader}>Equipped Items</Text>
+        {shouldShowEquippedItems && (
+          <>
+            <Text style={sharedStyles.sectionHeader}>Equipped Items</Text>
 
-        {equippedItems.length === 0 ? (
-          <Text style={styles.emptyText}>No items currently equipped</Text>
-        ) : (
-          equippedItems.map((item, i) => {
-            const fullItem = getItemByName(item.itemName) ?? {};
-            const merged   = { ...fullItem, ...item };
-            const bonus    = getItemBonusSummary(merged);
-            return (
+            {equippedItems.length === 0 ? (
+              <Text style={styles.emptyText}>No items currently equipped</Text>
+            ) : (
+              equippedItems.map((item, i) => {
+                const fullItem = getItemByName(item.itemName) ?? {};
+                const merged   = { ...fullItem, ...item };
+                const bonus    = getItemBonusSummary(merged);
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.equippedRow}
+                    onLongPress={() => {
+                      selectedEquippedRef.current = merged;
+                      setEquippedModalVisible(true);
+                    }}
+                    delayLongPress={400}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.equippedName} numberOfLines={1}>{item.itemName}</Text>
+                    {item.attuned && <Text style={styles.attunedBadge}>◈</Text>}
+                    {bonus        && <Text style={styles.equippedBonus}>{bonus}</Text>}
+                    <Text style={styles.equippedType}>{fullItem.ObjectType ?? '—'}</Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </>
+        )}
+
+        {/* SUBCLASS FEATURES */}
+        {unlockedSubclassFeatures.length > 0 && (
+          <>
+            <Text style={sharedStyles.sectionHeader}>Subclass Features</Text>
+            {unlockedSubclassFeatures.map((feature, i) => (
               <TouchableOpacity
-                key={i}
-                style={styles.equippedRow}
-                onLongPress={() => {
-                  selectedEquippedRef.current = merged;
-                  setEquippedModalVisible(true);
-                }}
+                key={`${feature.name}-${feature.level ?? 1}-${i}`}
+                style={styles.featChip}
                 delayLongPress={400}
                 activeOpacity={0.7}
+                onLongPress={() => {
+                  setSubclassFeatureDetail(feature);
+                  setSubclassFeatureDetailVisible(true);
+                }}
               >
-                <Text style={styles.equippedName} numberOfLines={1}>{item.itemName}</Text>
-                {item.attuned && <Text style={styles.attunedBadge}>◈</Text>}
-                {bonus        && <Text style={styles.equippedBonus}>{bonus}</Text>}
-                <Text style={styles.equippedType}>{fullItem.ObjectType ?? '—'}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.featChipName}>{feature.name}</Text>
+                </View>
+                <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
               </TouchableOpacity>
-            );
-          })
+            ))}
+          </>
+        )}
+
+        <Text style={sharedStyles.sectionHeader}>Languages</Text>
+        {selectedLanguages.length > 0 ? (
+          selectedLanguages.map((language) => (
+            <TouchableOpacity
+              key={language}
+              style={styles.featChip}
+              delayLongPress={400}
+              activeOpacity={0.7}
+              onLongPress={() => setLanguageModalVisible(true)}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.featChipName}>{language}</Text>
+              </View>
+              <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+            </TouchableOpacity>
+          ))
+        ) : (
+          <TouchableOpacity
+            style={styles.featChip}
+            delayLongPress={400}
+            activeOpacity={0.7}
+            onLongPress={() => setLanguageModalVisible(true)}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.featChipName}>No languages selected</Text>
+              <Text style={styles.featChipMeta}>Hold to manage</Text>
+            </View>
+            <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+          </TouchableOpacity>
         )}
 
       </ScrollView>
@@ -743,6 +1448,86 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
           </View>
         </View>
       </Modal>
+
+      <Modal visible={featManagerVisible} transparent animationType="slide">
+        <View style={sharedStyles.modalOverlay}>
+          <View style={sharedStyles.modalBox}>
+            <Text style={sharedStyles.modalTitle}>Manage Feats</Text>
+
+            {(character.feats?.length ?? 0) === 0 ? (
+              <Text style={styles.modalSub}>No feats added yet.</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 260, width: '100%', marginBottom: spacing.sm }}>
+                {(character.feats ?? []).map((feat, index) => {
+                  const featName = getFeatName(feat) ?? 'Unnamed Feat';
+                  const source = typeof feat === 'object' ? feat?.source : null;
+                  return (
+                    <View key={`${featName}-${index}`} style={styles.manageFeatRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.manageFeatName}>{featName}</Text>
+                        {!!source && <Text style={styles.manageFeatMeta}>{source}</Text>}
+                      </View>
+                      <TouchableOpacity style={styles.manageFeatBtn} onPress={() => openFeatPicker(index)}>
+                        <Text style={styles.manageFeatBtnText}>Change</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.manageFeatBtn} onPress={() => removeFeatAt(index)}>
+                        <Text style={styles.manageFeatBtnText}>Remove</Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <TouchableOpacity style={sharedStyles.primaryButton} onPress={() => openFeatPicker(null)}>
+              <Text style={sharedStyles.primaryButtonText}>Add Feat</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setFeatManagerVisible(false)}>
+              <Text style={sharedStyles.cancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={featPickerVisible} transparent animationType="slide">
+        <View style={sharedStyles.modalOverlay}>
+          <View style={sharedStyles.modalBox}>
+            <Text style={sharedStyles.modalTitle}>{featEditIndex != null ? 'Replace Feat' : 'Add Feat'}</Text>
+            <TextInput
+              style={[sharedStyles.input, { marginBottom: spacing.sm }]}
+              value={featSearch}
+              onChangeText={setFeatSearch}
+              placeholder="Search feats"
+              placeholderTextColor={colors.textDisabled}
+            />
+
+            <ScrollView style={{ maxHeight: 320, width: '100%' }}>
+              {filteredFeats.map((feat) => (
+                <TouchableOpacity
+                  key={`${feat.name}-${feat.source ?? 'SRC'}`}
+                  style={styles.featRow}
+                  onPress={() => selectFeatFromPicker(feat)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.featName}>{feat.name}</Text>
+                    <Text style={styles.featMeta}>{formatFeatSummary(feat)}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <TouchableOpacity
+              onPress={() => {
+                setFeatPickerVisible(false);
+                setFeatEditIndex(null);
+                setFeatSearch('');
+              }}
+            >
+              <Text style={sharedStyles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 <Modal
   visible={featDetailVisible}
   transparent
@@ -784,6 +1569,195 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     </View>
   </View>
 </Modal>
+
+      <Modal
+        visible={languageModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLanguageModalVisible(false)}
+      >
+        <View style={sharedStyles.modalOverlay}>
+          <View style={sharedStyles.modalBox}>
+            <Text style={sharedStyles.modalTitle}>Languages</Text>
+            <Text style={styles.modalSub}>Long-press the tile to manage known standard languages.</Text>
+            {selectedLanguages.length > 0 ? (
+              <Text style={styles.languageSummary}>
+                {selectedLanguages.join(', ')}
+              </Text>
+            ) : (
+              <Text style={styles.languageSummary}>No languages selected yet.</Text>
+            )}
+
+            <ScrollView style={styles.languageList} contentContainerStyle={styles.languageGrid}>
+              {STANDARD_DND_LANGUAGES.map((language) => {
+                const isSelected = selectedLanguages.includes(language);
+                return (
+                  <TouchableOpacity
+                    key={language}
+                    style={[styles.languageChip, isSelected && styles.languageChipActive]}
+                    onPress={() => toggleLanguageSelection(language)}
+                  >
+                    <Text style={[styles.languageChipText, isSelected && styles.languageChipTextActive]}>
+                      {language}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity onPress={() => setLanguageModalVisible(false)}>
+              <Text style={sharedStyles.cancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+<Modal
+  visible={subclassFeatureDetailVisible}
+  transparent
+  animationType="fade"
+  onRequestClose={() => setSubclassFeatureDetailVisible(false)}
+>
+  <View style={sharedStyles.modalOverlay}>
+    <View style={sharedStyles.modalBox}>
+      <Text style={sharedStyles.modalTitle}>
+        {subclassFeatureDetail?.name ?? 'Subclass Feature'}
+      </Text>
+
+      {!!subclassFeatureDetail && (
+        <>
+          <Text style={styles.featDetailMeta}>
+            Level {subclassFeatureDetail.level ?? '—'}
+          </Text>
+          <ScrollView style={{ maxHeight: 260, marginTop: spacing.sm }}>
+            <Text style={styles.featDetailText}>
+              {subclassFeatureDetail.description ?? 'No description available.'}
+            </Text>
+          </ScrollView>
+        </>
+      )}
+
+      <TouchableOpacity
+        onPress={() => setSubclassFeatureDetailVisible(false)}
+        style={{ marginTop: spacing.md }}
+      >
+        <Text style={sharedStyles.cancelText}>Close</Text>
+      </TouchableOpacity>
+    </View>
+  </View>
+</Modal>
+
+<Modal
+  visible={raceFeatureDetailVisible}
+  transparent
+  animationType="fade"
+  onRequestClose={() => setRaceFeatureDetailVisible(false)}
+>
+  <View style={sharedStyles.modalOverlay}>
+    <View style={sharedStyles.modalBox}>
+      <Text style={sharedStyles.modalTitle}>
+        {raceFeatureDetail?.name ?? 'Species Feature'}
+      </Text>
+
+      {!!raceFeatureDetail && (
+        <>
+          <Text style={styles.featDetailMeta}>
+            {selectedRace?.name ?? character.race ?? 'Species'}
+            {selectedRace?.source ? ` · ${selectedRace.source}` : ''}
+          </Text>
+          <ScrollView style={{ maxHeight: 260, marginTop: spacing.sm }}>
+            <Text style={styles.featDetailText}>
+              {raceFeatureDetail.text ?? 'No description available.'}
+            </Text>
+          </ScrollView>
+        </>
+      )}
+
+      <TouchableOpacity
+        onPress={() => setRaceFeatureDetailVisible(false)}
+        style={{ marginTop: spacing.md }}
+      >
+        <Text style={sharedStyles.cancelText}>Close</Text>
+      </TouchableOpacity>
+    </View>
+  </View>
+</Modal>
+
+      <Modal visible={manualTileModalVisible} transparent animationType="slide">
+        <View style={sharedStyles.modalOverlay}>
+          <View style={sharedStyles.modalBox}>
+            <Text style={sharedStyles.modalTitle}>{editingManualTileId ? 'Edit Tile' : 'Add Tile'}</Text>
+
+            <Text style={styles.tileFieldLabel}>Name</Text>
+            <TextInput
+              style={sharedStyles.input}
+              value={manualTileName}
+              onChangeText={setManualTileName}
+              placeholder="e.g. Misty Step"
+              placeholderTextColor={colors.textDisabled}
+              maxLength={40}
+            />
+
+            <Text style={styles.tileFieldLabel}>Type</Text>
+            <View style={styles.tileOptionRow}>
+              {[{ key: 'counter', label: 'Starting Value' }, { key: 'toggle', label: 'Toggle' }].map((option) => {
+                const isActive = manualTileMode === option.key;
+                return (
+                  <TouchableOpacity
+                    key={option.key}
+                    style={[styles.tileOptionButton, isActive && styles.tileOptionButtonActive]}
+                    onPress={() => setManualTileMode(option.key)}
+                  >
+                    <Text style={[styles.tileOptionText, isActive && styles.tileOptionTextActive]}>{option.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {manualTileMode === 'counter' && (
+              <>
+                <Text style={styles.tileFieldLabel}>Starting Value</Text>
+                <TextInput
+                  style={[sharedStyles.input, styles.tileValueInput]}
+                  value={manualTileStartValue}
+                  onChangeText={setManualTileStartValue}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  placeholderTextColor={colors.textDisabled}
+                />
+              </>
+            )}
+
+            <Text style={styles.tileFieldLabel}>Recharge</Text>
+            <View style={styles.tileOptionRow}>
+              {[{ key: 'short', label: 'Short Rest' }, { key: 'long', label: 'Long Rest' }].map((option) => {
+                const isActive = manualTileRecharge === option.key;
+                return (
+                  <TouchableOpacity
+                    key={option.key}
+                    style={[styles.tileOptionButton, isActive && styles.tileOptionButtonActive]}
+                    onPress={() => setManualTileRecharge(option.key)}
+                  >
+                    <Text style={[styles.tileOptionText, isActive && styles.tileOptionTextActive]}>{option.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <TouchableOpacity style={sharedStyles.primaryButton} onPress={saveManualTile}>
+              <Text style={sharedStyles.primaryButtonText}>{editingManualTileId ? 'Save Tile' : 'Add Tile'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setManualTileModalVisible(false);
+                resetManualTileForm();
+              }}
+            >
+              <Text style={sharedStyles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* EQUIPPED ITEM MODAL */}
       <Modal visible={equippedModalVisible} transparent animationType="fade">
@@ -1096,23 +2070,33 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                 <Text style={sharedStyles.modalTitle}>{breakdownRef.current.name}</Text>
                 <Text style={styles.breakdownSub}>Attack &amp; Damage Breakdown</Text>
                 <View style={styles.breakdownTable}>
-                  <BreakdownRow label="STR Modifier" value={`+${breakdownRef.current.strMod}`} />
+                  <BreakdownRow
+                    label={`${(breakdownRef.current.abilityKey ?? 'str').toUpperCase()} Modifier`}
+                    value={formatSignedNumber(breakdownRef.current.abilityMod ?? 0)}
+                  />
                   <BreakdownRow
                     label="Proficiency"
                     value={breakdownRef.current.isProficient
                       ? `+${breakdownRef.current.profBonus}`
                       : '— (not proficient)'}
                   />
-                  {breakdownRef.current.magicBonus > 0 && (
-                    <BreakdownRow label="Magic Bonus" value={`+${breakdownRef.current.magicBonus}`} />
+                  {(breakdownRef.current.magicAttackBonus ?? 0) > 0 && (
+                    <BreakdownRow label="Magic Bonus" value={`+${breakdownRef.current.magicAttackBonus}`} />
                   )}
-                  <BreakdownRow label="To Hit Total" value={`+${breakdownRef.current.attackTotal}`} isTotal />
+                  <BreakdownRow
+                    label="To Hit Total"
+                    value={formatSignedNumber(breakdownRef.current.attackTotal ?? 0)}
+                    isTotal
+                  />
                   <View style={styles.breakdownDivider} />
-                  <BreakdownRow label="Damage Die"   value={breakdownRef.current.damageDie} />
-                  <BreakdownRow label="STR/DEX Modifier" value={`+${breakdownRef.current.damageBonus}`} />
+                  <BreakdownRow label="Damage Die"   value={normalizeDamageDie(breakdownRef.current.damageDie)} />
+                  <BreakdownRow
+                    label={`${(breakdownRef.current.abilityKey ?? 'str').toUpperCase()} Modifier`}
+                    value={formatSignedNumber(breakdownRef.current.damageBonus ?? 0)}
+                  />
                   
-                  {breakdownRef.current.magicBonus > 0 && (
-                    <BreakdownRow label="Magic Bonus" value={`+${breakdownRef.current.magicBonus}`} />
+                  {(breakdownRef.current.magicDamageBonus ?? 0) > 0 && (
+                    <BreakdownRow label="Magic Bonus" value={`+${breakdownRef.current.magicDamageBonus}`} />
                   )}
                   
                   {/* Show Rage Bonus if it's active! */}
@@ -1122,7 +2106,11 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                   {breakdownRef.current.featDamageBonus > 0 &&
                   <BreakdownRow label="Feat Bonus"      value={`+${breakdownRef.current.featDamageBonus}`} />}
                   
-                  <BreakdownRow label="Total Damage" value={`+${breakdownRef.current.finalDamageBonus}`} isTotal />
+                  <BreakdownRow
+                    label="Total Damage"
+                    value={formatSignedNumber(breakdownRef.current.finalDamageBonus ?? 0)}
+                    isTotal
+                  />
                 </View>
               </>
             ) : (
@@ -1361,19 +2349,20 @@ topRow: {
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.xs,
+    justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
  gridCell: {
-  width: '30%',
-  flexGrow: 1,
+  width: '24%',
+  flexGrow: 0,
   backgroundColor: colors.surface,
   borderRadius: radius.sm,
   padding: spacing.sm,
   alignItems: 'center',
   justifyContent: 'center',
   minHeight: 60, // tweak to taste
-  ...shadows.card,
+  marginBottom: spacing.xs,
+  //...shadows.card,
 },
   gridValue: {
     fontSize: 16,
@@ -1395,7 +2384,7 @@ topRow: {
     marginBottom: spacing.sm,
     borderLeftWidth: 3,
     borderLeftColor: colors.accent,
-    ...shadows.card,
+    // ...shadows.card,
   },
   attackRowWeapon: {
     borderLeftColor: colors.accentSoft,
@@ -1813,7 +2802,7 @@ featChip: {
   paddingVertical: spacing.xs,
   paddingHorizontal: spacing.md,
   marginBottom: spacing.xs,
-  ...shadows.card,
+  // ...shadows.card,
 },
 featChipName: {
   fontSize: 14,
@@ -1834,6 +2823,117 @@ featDetailText: {
   fontSize: 13,
   color: colors.textPrimary,
   lineHeight: 18,
+},
+manageFeatRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: colors.surface,
+  borderRadius: radius.sm,
+  paddingVertical: spacing.sm,
+  paddingHorizontal: spacing.md,
+  marginBottom: spacing.xs,
+  gap: spacing.xs,
+},
+manageFeatName: {
+  color: colors.textPrimary,
+  fontWeight: '600',
+  fontSize: 14,
+},
+manageFeatMeta: {
+  ...typography.subtitle,
+  fontSize: 11,
+  marginTop: 1,
+},
+manageFeatBtn: {
+  backgroundColor: colors.surfaceDeep,
+  borderRadius: radius.sm,
+  paddingHorizontal: spacing.sm,
+  paddingVertical: spacing.xs,
+  borderWidth: 1,
+  borderColor: colors.surfaceAlt,
+},
+manageFeatBtnText: {
+  color: colors.textPrimary,
+  fontSize: 11,
+  fontWeight: '600',
+},
+
+languageSummary: {
+  color: colors.textMuted,
+  fontSize: 12,
+  textAlign: 'center',
+  marginBottom: spacing.sm,
+},
+languageList: {
+  maxHeight: 280,
+  width: '100%',
+  marginBottom: spacing.sm,
+},
+languageGrid: {
+  flexDirection: 'row',
+  flexWrap: 'wrap',
+  gap: spacing.xs,
+  justifyContent: 'center',
+},
+languageChip: {
+  backgroundColor: colors.surfaceDeep,
+  borderRadius: radius.sm,
+  borderWidth: 1,
+  borderColor: colors.surfaceAlt,
+  paddingHorizontal: spacing.sm,
+  paddingVertical: spacing.xs,
+  minWidth: '30%',
+  alignItems: 'center',
+},
+languageChipActive: {
+  borderColor: colors.accent,
+  backgroundColor: colors.surface,
+},
+languageChipText: {
+  color: colors.textMuted,
+  fontSize: 12,
+  fontWeight: '600',
+},
+languageChipTextActive: {
+  color: colors.accentSoft,
+},
+
+tileFieldLabel: {
+  ...typography.label,
+  alignSelf: 'flex-start',
+  marginTop: spacing.xs,
+  marginBottom: spacing.xs,
+},
+tileOptionRow: {
+  flexDirection: 'row',
+  gap: spacing.sm,
+  width: '100%',
+  marginBottom: spacing.sm,
+},
+tileOptionButton: {
+  flex: 1,
+  backgroundColor: colors.surfaceDeep,
+  borderRadius: radius.sm,
+  borderWidth: 1,
+  borderColor: colors.surfaceAlt,
+  paddingVertical: spacing.sm,
+  alignItems: 'center',
+},
+tileOptionButtonActive: {
+  borderColor: colors.accent,
+  backgroundColor: colors.surface,
+},
+tileOptionText: {
+  color: colors.textMuted,
+  fontSize: 12,
+  fontWeight: '600',
+},
+tileOptionTextActive: {
+  color: colors.accentSoft,
+},
+tileValueInput: {
+  textAlign: 'center',
+  marginBottom: spacing.sm,
 },
 
 

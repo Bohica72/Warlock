@@ -106,7 +106,7 @@ export const WARLOCK = {
         { 
           level: 6, 
           name: 'Accursed Specter', 
-          description: "When you slay a humanoid, you can raise its spirit as a specter under your control until the end of your next long rest. The specter gains temporary hit points and acts on your turn." 
+          description: "When you slay a humanoid, you can raise its spirit as a specter under your control until the end of your next long rest. The specter gains temporary hit points equal to half your level and acts on your turn." 
         },
         { 
           level: 10, 

@@ -17,6 +17,13 @@ const HEAVY_WEAPONS = new Set([
   'Heavy Crossbow',
 ]);
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return '';
+}
+
 
 
 export class Character {
@@ -29,6 +36,8 @@ export class Character {
     this.subclassId  = data.subclassId ?? null;
     this.race        = data.race ?? null;
     this.raceSource  = data.raceSource ?? null;
+    this.languages   = Array.isArray(data.languages) ? data.languages : [];
+    this.showUnarmedStrike = data.showUnarmedStrike ?? true;
     this.background  = data.background ?? null;
     this.classSource = data.classSource ?? null;
     this.knownCantrips = data.knownCantrips ?? [];
@@ -76,9 +85,12 @@ export class Character {
 
     // Inventory & attacks
     this.inventory    = data.inventory ?? [];
+    this.customItems  = data.customItems ?? [];
     this.attunedItems = data.attunedItems ?? [];
     this.attacks      = data.attacks ?? [];
     this.overrides    = data.overrides ?? {};
+    this.levelSnapshots = Array.isArray(data.levelSnapshots) ? data.levelSnapshots : [];
+    this.manualTiles = Array.isArray(data.manualTiles) ? data.manualTiles : [];
 
     // ─── 2. THE DYNAMIC ENGINE ───────────────────────────────────────────────
     
@@ -185,9 +197,9 @@ export class Character {
           this[usedProp] = Math.max(0, (this[usedProp] || 0) - rechargeRule);
         }
         
-        // Auto-turn off active states (like Rage) on a Long Rest
+            // Auto-turn off active states (like Rage) on a Long Rest
         if (res.displayType === 'toggle' && restType === 'long') {
-           this.activeToggles[res.id] = false;
+              this.activeToggles[res.id] = false;
         }
       }
     });
@@ -264,6 +276,9 @@ getPopulatedSpells() {
 
     if (isHexblade) return chaMod;
 
+    const isRanged = item.Type?.toUpperCase().startsWith('R');
+    if (isRanged) return dexMod;
+
     const isFinesse = item.Type?.toLowerCase().includes('finesse') || 
                       item.Properties?.includes('Finesse');
     if (isFinesse) {
@@ -273,11 +288,31 @@ getPopulatedSpells() {
     return strMod;
   }
 
+  getWeaponAbilityKey(item) {
+    const isHexblade = this.subclassId?.toLowerCase() === 'hexblade';
+    const strMod = this.getAbilityMod('str');
+    const dexMod = this.getAbilityMod('dex');
+
+    if (isHexblade) return 'cha';
+
+    const isRanged = item.Type?.toUpperCase().startsWith('R');
+    if (isRanged) return 'dex';
+
+    const isFinesse = item.Type?.toLowerCase().includes('finesse') ||
+                      item.Properties?.includes('Finesse');
+    if (isFinesse) {
+      return dexMod > strMod ? 'dex' : 'str';
+    }
+
+    return 'str';
+  }
+
   // ─── Saves & skills ──────────────────────────────────────────────────────────
   getSaveBonus(ability) {
     const mod        = this.getAbilityMod(ability);
     const proficient = this.proficiencies?.saves?.includes(ability);
-    return mod + (proficient ? this.proficiencyBonus : 0);
+    const itemBonus  = this.getEquippedBonuses()?.bonusSaves?.[ability] || 0;
+    return mod + (proficient ? this.proficiencyBonus : 0) + itemBonus;
   }
 
   getSkillBonus(skill) {
@@ -311,7 +346,12 @@ getPopulatedSpells() {
       : proficient
         ? this.proficiencyBonus
         : 0;
-    return mod + profBonus;
+    const itemBonus  = this.getEquippedBonuses()?.bonusSkills?.[skill] || 0;
+    return mod + profBonus + itemBonus;
+  }
+
+  getEquippedBonuses() {
+    return getEquippedBonuses(this.inventory, this.customItems ?? []);
   }
 
   // ─── Derived stats ───────────────────────────────────────────────────────────
@@ -345,7 +385,9 @@ getPopulatedSpells() {
     let hasShield = false;
 
     for (const entry of equipped) {
-      const stats = getArmorStatsByName(entry.itemName);
+      const itemData = getItemByName(entry.itemName, this.customItems ?? []);
+      const armorLookupName = itemData?.custom ? itemData?.BaseArmorName : entry.itemName;
+      const stats = getArmorStatsByName(armorLookupName);
       if (stats) {
         if (stats.type === 'shield') {
           hasShield = true;
@@ -384,7 +426,7 @@ getPopulatedSpells() {
     }
 
     const shieldBonus = hasShield ? 2 : 0;
-    const { bonusAC } = getEquippedBonuses(this.inventory);
+    const { bonusAC } = this.getEquippedBonuses();
 
     return {
       formula,
@@ -420,6 +462,17 @@ getPopulatedSpells() {
 
   getEquippedWeaponAttacks() {
     const equipped = (this.inventory ?? []).filter(e => e.equipped);
+    const toNumber = (value) => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string') {
+        const normalized = value.replace(/[−–—]/g, '-');
+        const match = normalized.match(/-?\d+/);
+        return match ? parseInt(match[0], 10) : 0;
+      }
+      const parsed = parseInt(value, 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
     // Determine if character has GWM feat
     const hasGWM = (this.feats ?? []).some(f => f.name.toLowerCase().includes('great weapon master'));
     
@@ -429,36 +482,50 @@ getPopulatedSpells() {
         (getClassData(this.classId)?.progressionExtras?.rageDamage?.[this.level] ?? 2) : 0;
 
     return equipped.map(entry => {
-      const item = getItemByName(entry.itemName) ?? {};
+      const item = getItemByName(entry.itemName, this.customItems ?? []) ?? {};
       const atkMod = this.getWeaponModifier(item);
+      const abilityKey = this.getWeaponAbilityKey(item);
       const isProficient = entry.proficient ?? true;
-      const magicBonus = (entry.BonusWeapon ?? item.BonusWeapon) ?? 0;
+      const magicAttackBonus = toNumber((entry.BonusWeapon ?? item.BonusWeapon) ?? 0);
+      const magicDamageBonus = toNumber((entry.BonusDamage ?? item.BonusDamage ?? entry.BonusWeapon ?? item.BonusWeapon) ?? 0);
+      const weaponLookupName = firstNonEmptyString(
+        item.BaseItem?.split('|')[0],
+        item.BaseWeaponName,
+        entry.baseWeaponName,
+        entry.BaseWeaponName,
+        entry.itemName,
+      );
 
       // Extract basic damage info
-      const dmgInfo = getWeaponDamageByName(entry.itemName);
+      const dmgInfo = getWeaponDamageByName(weaponLookupName);
       const damageDie = dmgInfo ? dmgInfo.dice : (entry.damageDie ?? '—');
       const damageType = dmgInfo ? dmgInfo.type : '';
 
       const weaponName = item.Name ?? entry.itemName ?? '';
       const isHeavy = HEAVY_WEAPONS.has(weaponName)
-        || HEAVY_WEAPONS.has(item.BaseItem?.split('|')[0] ?? '')
+        || HEAVY_WEAPONS.has(weaponLookupName)
         || Array.from(HEAVY_WEAPONS).some(w => weaponName.toLowerCase().includes(w.toLowerCase()));
 
       const gwmBonus = (hasGWM && isHeavy) ? 3 : 0;
-      const finalDamageBonus = atkMod + magicBonus + rageBonus + gwmBonus;
+      const finalDamageBonus = atkMod + magicDamageBonus + rageBonus + gwmBonus;
 
       return {
         name: entry.itemName,
-        attackBonus: atkMod + (isProficient ? this.proficiencyBonus : 0) + magicBonus,
+        attackBonus: atkMod + (isProficient ? this.proficiencyBonus : 0) + magicAttackBonus,
         damageDie,
         damageType,
-        atkMod, 
+        atkMod,
+        abilityKey,
+        abilityMod: atkMod,
+        baseWeaponName: weaponLookupName,
         strMod: atkMod, // Backwards compatibility for UI
-        magicBonus,
+        magicBonus: magicAttackBonus,
+        magicAttackBonus,
+        magicDamageBonus,
         isProficient,
         appliedRageBonus: rageBonus,
         featDamageBonus: gwmBonus,
-        damageBonus: atkMod, 
+        damageBonus: atkMod,
         finalDamageBonus,
         isWeapon: true,
       };
@@ -476,6 +543,8 @@ getPopulatedSpells() {
       subclassId:          this.subclassId,
       race:                this.race,
       raceSource:          this.raceSource,
+      languages:           this.languages,
+      showUnarmedStrike:   this.showUnarmedStrike,
       background:          this.background,
       abilities:           this.abilities,
       proficiencyBonus:    this.proficiencyBonus,
@@ -495,9 +564,12 @@ getPopulatedSpells() {
       darkvision:          this.darkvision,
       inspiration:         this.inspiration,
       inventory:           this.inventory,
+      customItems:         this.customItems,
       attunedItems:        this.attunedItems,
       attacks:             this.attacks,
       overrides:           this.overrides,
+      levelSnapshots:      this.levelSnapshots,
+      manualTiles:         this.manualTiles,
       feats:               this.feats,
       
       // Save our dynamic toggles

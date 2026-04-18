@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { View, Text, TouchableOpacity, TextInput, FlatList, StyleSheet, Modal, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Character } from '../models/Character';
-import { saveCharacter } from '../utils/CharacterStore';
+import { patchCharacter } from '../utils/CharacterStore';
 import { getAllSpells } from '../utils/DataLoader';
 import { getClassData } from '../data/classes';
 import { colors, spacing, radius, typography, sharedStyles } from '../styles/theme';
@@ -69,13 +69,13 @@ export default function SpellPickerScreen({ route, navigation }) {
   };
 
   const handleSave = async () => {
+    const updatedCharacter = await patchCharacter(character.id, { preparedSpells: localPrepared });
     character.preparedSpells = localPrepared;
-    await saveCharacter(character);
     
     // NEW: Pass 'merge: true' and the activeTab param so it doesn't reset to Overview
     navigation.navigate({
       name: 'Character',
-      params: { character: character.toJSON(), activeTab: 'Magic' },
+      params: { character: updatedCharacter.toJSON(), activeTab: 'Magic' },
       merge: true,
     });
   };

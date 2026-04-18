@@ -6,7 +6,7 @@ import {
   Modal, TextInput, Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { loadCharacters, addCharacter, saveCharacter, deleteCharacter } from '../utils/CharacterStore';
+import { loadCharacters, addCharacter, saveCharacter, deleteCharacter, exportCharacter, importCharacter } from '../utils/CharacterStore';
 import { Character } from '../models/Character';
 import { sampleCharacter } from '../data/sampleCharacter';
 import { colors, spacing, typography, radius, shadows, sharedStyles } from '../styles/theme';
@@ -40,6 +40,19 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
   const handleAdd = () => {
   onCreateCharacter();
 };
+
+  const handleImport = async () => {
+    const importedChar = await importCharacter();
+    if (importedChar) {
+      const updated = await addCharacter(importedChar);
+      setCharacters(updated);
+    }
+  };
+
+  const handleExport = async () => {
+    setActionModalVisible(false);
+    await exportCharacter(selectedCharRef.current);
+  };
 
 
   const handleLongPress = (item) => {
@@ -123,6 +136,10 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
       {/* Page header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Characters</Text>
+        <TouchableOpacity onPress={handleImport} style={styles.importButton}>
+          <Ionicons name="download-outline" size={20} color={colors.accent} />
+          <Text style={styles.importText}>Import</Text>
+        </TouchableOpacity>
         <Text style={styles.headerHint}>Hold a character to rename or delete</Text>
       </View>
 
@@ -191,6 +208,11 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
     : ''}
 </Text>
 
+
+            <TouchableOpacity style={styles.actionButton} onPress={handleExport}>
+              <Ionicons name="share-outline" size={20} color={colors.accentSoft} />
+              <Text style={styles.actionButtonText}>Export</Text>
+            </TouchableOpacity>
 
             <TouchableOpacity style={styles.actionButton} onPress={openRename}>
               <Ionicons name="pencil-outline" size={20} color={colors.accentSoft} />
@@ -277,6 +299,22 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: 'bold',
     color: colors.textPrimary,
+  },
+  importButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: spacing.sm,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    backgroundColor: colors.surfaceDeep,
+    borderRadius: radius.sm,
+  },
+  importText: {
+    color: colors.accent,
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: spacing.xs,
   },
   headerHint: {
     ...typography.subtitle,

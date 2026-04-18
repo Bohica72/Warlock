@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Character } from '../models/Character';
-import { saveCharacter } from '../utils/CharacterStore';
+import { patchCharacter } from '../utils/CharacterStore';
 import { invocations } from '../data/invocations';
 import { colors, spacing, radius, typography, shadows, sharedStyles } from '../styles/theme';
 
@@ -30,8 +30,9 @@ export default function MagicScreen({ route, navigation }) {
 
   const cantrips = knownSpells.filter(spell => spell.level === 0);
 
-  const persist = async () => {
-    await saveCharacter(character);
+  const persist = async (updates = {}) => {
+    Object.assign(character, updates);
+    await patchCharacter(character.id, updates);
   };
 
   const getMaxUses = (resource) => {
@@ -43,18 +44,17 @@ export default function MagicScreen({ route, navigation }) {
   };
 
   // 3. Slot Interaction Logic
-  const toggleSlot = (resourceId, index, currentUsed, max) => {
+  const toggleSlot = async (resourceId, index, currentUsed, max) => {
     // If clicking a box that is 'used', un-use it. Otherwise, use it.
     const newUsed = index < currentUsed ? currentUsed - 1 : currentUsed + 1;
-    character[`${resourceId}Used`] = Math.max(0, Math.min(max, newUsed));
-    persist();
+    const used = Math.max(0, Math.min(max, newUsed));
+    await persist({ [`${resourceId}Used`]: used });
     setRefreshTrigger(prev => prev + 1);
   };
 
-  const castSpell = (resourceId, currentUsed, max) => {
+  const castSpell = async (resourceId, currentUsed, max) => {
     if (currentUsed >= max) return;
-    character[`${resourceId}Used`] = currentUsed + 1;
-    persist();
+    await persist({ [`${resourceId}Used`]: currentUsed + 1 });
     setRefreshTrigger(prev => prev + 1);
   };
 
@@ -67,14 +67,14 @@ export default function MagicScreen({ route, navigation }) {
         
         <View style={styles.iconRow}>
           <TouchableOpacity onPress={() => navigation.navigate('SpellPicker', { character })}>
-            <Ionicons name="book-outline" size={24} color={colors.textPrimary} />
+            <Ionicons name="book-outline" size={14} color={colors.textPrimary} />
           </TouchableOpacity>
           {character.classId === 'warlock' && (
             <TouchableOpacity onPress={() => navigation.navigate('InvocationPicker', { 
               character, 
-              onSave: (list) => { setKnownInvocations(list); character.knownInvocations = list; saveCharacter(character); } 
+              onSave: async (list) => { setKnownInvocations(list); character.knownInvocations = list; await patchCharacter(character.id, { knownInvocations: list }); } 
             })}>
-              <Ionicons name="sparkles-outline" size={24} color={colors.textPrimary} style={{ marginLeft: spacing.md }} />
+              <Ionicons name="sparkles-outline" size={14} color={colors.textPrimary} style={{ marginLeft: spacing.md }} />
             </TouchableOpacity>
           )}
         </View>
@@ -313,7 +313,7 @@ const styles = StyleSheet.create({
   },
   levelTitle: {
     color: colors.textPrimary,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     textTransform: 'uppercase',
     letterSpacing: 1,
