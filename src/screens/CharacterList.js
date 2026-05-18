@@ -6,7 +6,7 @@ import {
   Modal, TextInput, Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { loadCharacters, addCharacter, saveCharacter, deleteCharacter, exportCharacter, importCharacter } from '../utils/CharacterStore';
+import { loadCharacters, addCharacter, patchCharacter, deleteCharacter, exportCharacter, importCharacter } from '../utils/CharacterStore';
 import { Character } from '../models/Character';
 import { sampleCharacter } from '../data/sampleCharacter';
 import { colors, spacing, typography, radius, shadows, sharedStyles } from '../styles/theme';
@@ -69,10 +69,9 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
   const handleRename = async () => {
     const trimmed = renameInput.trim();
     if (!trimmed) return;
-    const updated = { ...selectedCharRef.current, name: trimmed };
-    await saveCharacter(updated);
+    const updated = await patchCharacter(selectedCharRef.current.id, { name: trimmed });
     setCharacters(prev =>
-      prev.map(c => c.id === updated.id ? { ...c, name: trimmed } : c)
+      prev.map(c => c.id === updated.id ? updated : c)
     );
     setRenameModalVisible(false);
   };
@@ -136,10 +135,6 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
       {/* Page header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Characters</Text>
-        <TouchableOpacity onPress={handleImport} style={styles.importButton}>
-          <Ionicons name="download-outline" size={20} color={colors.accent} />
-          <Text style={styles.importText}>Import</Text>
-        </TouchableOpacity>
         <Text style={styles.headerHint}>Hold a character to rename or delete</Text>
       </View>
 
@@ -183,10 +178,15 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
         )}
       />
 
-  {/* Add FAB */}
-<TouchableOpacity style={styles.fab} onPress={onCreateCharacter}>
-  <Ionicons name="add" size={28} color={colors.textPrimary} />
-</TouchableOpacity>
+  {/* FABs */}
+<View style={styles.fabRow}>
+  <TouchableOpacity style={styles.fab} onPress={handleImport}>
+    <Ionicons name="download-outline" size={24} color={colors.textPrimary} />
+  </TouchableOpacity>
+  <TouchableOpacity style={styles.fab} onPress={onCreateCharacter}>
+    <Ionicons name="add" size={28} color={colors.textPrimary} />
+  </TouchableOpacity>
+</View>
 
 
 
@@ -221,7 +221,7 @@ export default function CharacterList({ onSelectCharacter, onCreateCharacter }) 
 
             <TouchableOpacity style={[styles.actionButton, styles.actionButtonDanger]} onPress={handleDelete}>
               <Ionicons name="trash-outline" size={20} color={colors.accent} />
-              <Text style={[styles.actionButtonText, { color: colors.accent }]}>Delete</Text>
+              <Text style={styles.actionButtonText}>Delete</Text>
             </TouchableOpacity>
 
             <TouchableOpacity onPress={() => setActionModalVisible(false)}>
@@ -300,22 +300,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: colors.textPrimary,
   },
-  importButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    marginTop: spacing.sm,
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    backgroundColor: colors.surfaceDeep,
-    borderRadius: radius.sm,
-  },
-  importText: {
-    color: colors.accent,
-    fontSize: 14,
-    fontWeight: '600',
-    marginLeft: spacing.xs,
-  },
   headerHint: {
     ...typography.subtitle,
     fontSize: 11,
@@ -374,11 +358,15 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
 
-  // FAB
-  fab: {
+  // FABs
+  fabRow: {
     position: 'absolute',
     right: spacing.lg,
     bottom: spacing.lg,
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  fab: {
     width: 56,
     height: 56,
     borderRadius: radius.full,

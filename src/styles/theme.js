@@ -113,7 +113,7 @@ export const sharedStyles = {
     letterSpacing: 1,
     textTransform: 'uppercase',
     marginBottom: spacing.sm,
-    marginTop: spacing.md,
+    marginTop: spacing.sm,
   },
   row: {
     flexDirection: 'row',

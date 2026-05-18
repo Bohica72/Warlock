@@ -7,7 +7,8 @@ export function formatFeatSummary(feat) {
     parts.push(bonuses);
   }
   if (feat.abilityBonus?.type === 'choice') {
-    parts.push(`+1 to ${feat.abilityBonus.from.map(s => s.toUpperCase()).join(' or ')}`);
+    const amount = feat.abilityBonus.amount ?? 1;
+    parts.push(`+${amount} to ${feat.abilityBonus.from.map(s => s.toUpperCase()).join(' or ')}`);
   }
   if (feat.armorProficiencies) parts.push('Armor proficiency');
   if (feat.skillProficiencies)  parts.push('Skill proficiencies');

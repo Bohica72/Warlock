@@ -1,10 +1,26 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Character } from '../models/Character';
 import { patchCharacter } from '../utils/CharacterStore';
 import { invocations } from '../data/invocations';
+import { setNavCallback, clearNavCallback } from '../utils/NavigationCallbacks';
 import { colors, spacing, radius, typography, shadows, sharedStyles } from '../styles/theme';
+
+const LESSONS_INVOCATION_ID = 'lessons_of_the_first_ones';
+
+const getFeatName = (feat) => (typeof feat === 'string' ? feat : feat?.name);
+
+function mergeLessonsInvocationFeats(existingFeats, lessonFeatNames, level) {
+  const baseFeats = (existingFeats ?? []).filter((feat) => !(feat?.grantedByInvocation === LESSONS_INVOCATION_ID));
+  const lessonFeats = (lessonFeatNames ?? []).map((name) => ({
+    name,
+    source: 'Invocation: Lessons of the First Ones',
+    takenAtLevel: level,
+    grantedByInvocation: LESSONS_INVOCATION_ID,
+  }));
+  return [...baseFeats, ...lessonFeats];
+}
 
 export default function MagicScreen({ route, navigation }) {
   // 1. Initialize character and state
@@ -15,6 +31,86 @@ export default function MagicScreen({ route, navigation }) {
   const [selectedSpell, setSelectedSpell] = useState(null);
   const [selectedInvocation, setSelectedInvocation] = useState(null);
   const [knownInvocations, setKnownInvocations] = useState(character.knownInvocations || []);
+
+  const formatSigned = (value) => {
+    if (value == null) return '—';
+    return value >= 0 ? `+${value}` : `${value}`;
+  };
+
+  const normalizeKey = (value) =>
+    String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/\s+/g, '_');
+
+  const resolveSpellcastingAbilityFromCharacter = () => {
+    const explicit = normalizeKey(character.spellcastingAbility);
+    if (explicit === 'int' || explicit === 'wis' || explicit === 'cha') return explicit;
+
+    const classId = normalizeKey(character.classId);
+    const subclassId = normalizeKey(character.subclassId);
+
+    if (classId === 'artificer' || classId === 'wizard') return 'int';
+    if (classId === 'cleric' || classId === 'druid' || classId === 'ranger') return 'wis';
+    if (classId === 'bard' || classId === 'paladin' || classId === 'sorcerer' || classId === 'warlock') return 'cha';
+
+    const isFourElementsMonk = classId === 'monk'
+      && (subclassId === 'way_of_the_four_elements' || subclassId.includes('four_elements'));
+    if (isFourElementsMonk) return 'wis';
+
+    const isEldritchKnight = classId === 'fighter'
+      && (subclassId === 'eldritch_knight' || (subclassId.includes('eldritch') && subclassId.includes('knight')));
+    if (isEldritchKnight) return 'cha';
+
+    const isArcaneTrickster = classId === 'rogue'
+      && (subclassId === 'arcane_trickster' || (subclassId.includes('arcane') && subclassId.includes('trickster')));
+    if (isArcaneTrickster) return 'cha';
+
+    return null;
+  };
+
+  const spellcastingAbility = resolveSpellcastingAbilityFromCharacter();
+  const spellcastingMod = spellcastingAbility ? character.getAbilityMod(spellcastingAbility) : null;
+  const spellAttackBonus = spellcastingMod == null
+    ? null
+    : character.proficiencyBonus + spellcastingMod;
+  const spellSaveDc = spellcastingMod == null
+    ? null
+    : 8 + character.proficiencyBonus + spellcastingMod;
+
+  const invocationIdLookup = useMemo(() => {
+    const entries = [];
+    invocations.forEach((inv) => {
+      entries.push([normalizeKey(inv.id), inv.id]);
+      entries.push([normalizeKey(inv.name), inv.id]);
+    });
+    return new Map(entries);
+  }, []);
+
+  const resolveInvocationId = (value) => {
+    if (typeof value !== 'string') return null;
+    const direct = invocations.find((inv) => inv.id === value);
+    if (direct) return direct.id;
+    return invocationIdLookup.get(normalizeKey(value)) ?? null;
+  };
+
+  const normalizedKnownInvocations = useMemo(() => {
+    const rawList = Array.isArray(knownInvocations) ? knownInvocations : [];
+    const resolved = rawList.map(resolveInvocationId).filter(Boolean);
+    const uniqueNonRepeatable = [];
+    const lessons = [];
+
+    resolved.forEach((id) => {
+      if (id === LESSONS_INVOCATION_ID) {
+        lessons.push(id);
+        return;
+      }
+      if (!uniqueNonRepeatable.includes(id)) uniqueNonRepeatable.push(id);
+    });
+
+    return [...uniqueNonRepeatable, ...lessons];
+  }, [knownInvocations, invocationIdLookup]);
 
   // 2. Fetch the real data from the engine!
   const magicResources = character.getMagicResources();
@@ -32,7 +128,8 @@ export default function MagicScreen({ route, navigation }) {
 
   const persist = async (updates = {}) => {
     Object.assign(character, updates);
-    await patchCharacter(character.id, updates);
+    const mergedCharacter = await patchCharacter(character.id, updates);
+    Object.assign(character, mergedCharacter.toJSON());
   };
 
   const getMaxUses = (resource) => {
@@ -67,17 +164,33 @@ export default function MagicScreen({ route, navigation }) {
         
         <View style={styles.iconRow}>
           <TouchableOpacity onPress={() => navigation.navigate('SpellPicker', { character })}>
-            <Ionicons name="book-outline" size={14} color={colors.textPrimary} />
+            <Ionicons name="book-outline" size={16} color={colors.textPrimary} />
           </TouchableOpacity>
           {character.classId === 'warlock' && (
-            <TouchableOpacity onPress={() => navigation.navigate('InvocationPicker', { 
-              character, 
-              onSave: async (list) => { setKnownInvocations(list); character.knownInvocations = list; await patchCharacter(character.id, { knownInvocations: list }); } 
-            })}>
-              <Ionicons name="sparkles-outline" size={14} color={colors.textPrimary} style={{ marginLeft: spacing.md }} />
+            <TouchableOpacity onPress={() => {
+              setNavCallback('invocationSave', async (list, lessonFeatNames = []) => {
+                const nextFeats = mergeLessonsInvocationFeats(
+                  character.feats ?? [],
+                  lessonFeatNames,
+                  parseInt(character.level, 10) || 1
+                );
+
+                setKnownInvocations(list);
+                character.knownInvocations = list;
+                character.feats = nextFeats;
+                await patchCharacter(character.id, { knownInvocations: list, feats: nextFeats });
+              });
+              navigation.navigate('InvocationPicker', { character });
+            }}>
+              <Ionicons name="sparkles-outline" size={16} color={colors.textPrimary} style={{ marginLeft: spacing.md }} />
             </TouchableOpacity>
           )}
         </View>
+      </View>
+
+      <View style={styles.topMetaBar}>
+        <Text style={styles.topMetaText}>Spell Attack: {formatSigned(spellAttackBonus)}</Text>
+        <Text style={styles.topMetaText}>Spell Save DC: {spellSaveDc ?? '—'}</Text>
       </View>
 
       <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 80 }}>
@@ -113,9 +226,11 @@ export default function MagicScreen({ route, navigation }) {
           if (max === 0) return null;
 
           const isMysticArcanum = slotResource.name.toLowerCase().includes('mystic arcanum');
+          const isPactSlots = slotResource.name.toLowerCase().includes('pact slot');
           const spellsForSlot = knownSpells.filter(spell => {
-            if (isMysticArcanum) return spell.level === slotLevel;
-            return spell.level > 0 && spell.level <= slotLevel;
+            const spellLevel = parseInt(spell.level, 10) || 0;
+            if (isMysticArcanum) return spellLevel === slotLevel;
+            return spellLevel > 0 && spellLevel <= slotLevel;
           });
 
           return (
@@ -142,7 +257,8 @@ export default function MagicScreen({ route, navigation }) {
               ) : (
                 <View style={styles.spellList}>
                   {spellsForSlot.map((spell, i) => {
-                    const isUpcast = !isMysticArcanum && spell.level < slotLevel;
+                    const spellLevel = parseInt(spell.level, 10) || 0;
+                    const isUpcast = !isMysticArcanum && spellLevel < slotLevel;
                     const canCast = currentUsed < max;
 
                     return (
@@ -154,11 +270,17 @@ export default function MagicScreen({ route, navigation }) {
                         activeOpacity={0.7}
                       >
                         <View style={styles.spellInfo}>
-                          <Text style={[styles.spellName, isUpcast && { color: colors.textMuted }]}>
+                          <Text style={styles.spellName}>
                             {spell.name}
                           </Text>
                           <Text style={styles.spellMeta}>
-                            {isUpcast && <Text style={styles.upcastBadge}>Base: Lvl {spell.level} • </Text>}
+                            {isUpcast && (
+                              <Text style={styles.upcastBadge}>
+                                {isPactSlots
+                                  ? `Cast at Lvl ${slotLevel} (Base Lvl ${spellLevel}) • `
+                                  : `Base Lvl ${spellLevel} • `}
+                              </Text>
+                            )}
                             {spell.time} • {spell.duration}
                           </Text>
                         </View>
@@ -184,20 +306,21 @@ export default function MagicScreen({ route, navigation }) {
         })}
 
         {/* Selected Invocations Display */}
-        {character.classId === 'warlock' && knownInvocations.length > 0 && (
+        {character.classId === 'warlock' && normalizedKnownInvocations.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Eldritch Invocations</Text>
-            {knownInvocations.map(invId => {
+            {normalizedKnownInvocations.map((invId, idx) => {
               const inv = invocations.find(i => i.id === invId);
+              if (!inv) return null;
               return (
                 <TouchableOpacity 
-                  key={invId} 
+                  key={`${invId}-${idx}`} 
                   style={styles.invCard}
                   onLongPress={() => setSelectedInvocation(inv)}
                   delayLongPress={300}
                   activeOpacity={0.7}
                 >
-                  <Text style={styles.invName}>{inv?.name}</Text>
+                  <Text style={styles.invName}>{inv.name}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -301,6 +424,19 @@ const styles = StyleSheet.create({
   iconRow: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  topMetaBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+    backgroundColor: colors.surface,
+  },
+  topMetaText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
   },
   
   levelBlock: { marginBottom: spacing.lg },

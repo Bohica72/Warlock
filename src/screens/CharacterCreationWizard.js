@@ -8,7 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { addCharacter } from '../utils/CharacterStore';
 import { Character } from '../models/Character';
 import { getRaces, getBackgrounds, getBackgroundFeats } from '../utils/DataLoader';
-import { applyFeatEffects, FEAT_EFFECTS } from '../data/featEffects';
+import { applyFeatEffects } from '../data/featEffects';
 import { formatFeatSummary } from '../utils/featUtils';
 import { getAllClasses } from '../data/classes'; // From your new unified index!
 
@@ -43,17 +43,74 @@ const STEP_TITLES = {
   CLASS:      'Choose a Class',
   SUBCLASS:   'Choose a Subclass',
   BACKGROUND: 'Choose a Background',
+  FEAT:       'Choose a Background Feat',
   ABILITIES:  'Ability Scores',
   REVIEW:     'Review Character',
 };
 
 // ─── Stat Constants ───────────────────────────────────────────────────────────
 const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+const POINT_BUY_TOTAL = 27;
+const POINT_BUY_COST_BY_SCORE = {
+  8: 0,
+  9: 1,
+  10: 2,
+  11: 3,
+  12: 4,
+  13: 5,
+  14: 7,
+  15: 9,
+};
 const STAT_LABELS = {
   str: 'Strength',     dex: 'Dexterity',  con: 'Constitution',
   int: 'Intelligence', wis: 'Wisdom',     cha: 'Charisma',
 };
 const STAT_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+
+function getSpeciesAbilityBonuses(race) {
+  const bonuses = { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 };
+  for (const bonus of (race?.abilityBonuses ?? [])) {
+    if (bonus.type === 'fixed') {
+      for (const [stat, val] of Object.entries(bonus.bonuses ?? {})) {
+        bonuses[stat] = (bonuses[stat] ?? 0) + val;
+      }
+    }
+  }
+  return bonuses;
+}
+
+function getAppliedAbilityBonuses(wizard) {
+  if (wizard?.racialBonusRule === 'custom') {
+    const bonuses = { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 };
+    const plus2 = wizard?.customRacialBonuses?.plus2;
+    const plus1 = wizard?.customRacialBonuses?.plus1;
+
+    if (plus2 && bonuses[plus2] != null) bonuses[plus2] += 2;
+    if (plus1 && plus1 !== plus2 && bonuses[plus1] != null) bonuses[plus1] += 1;
+    return bonuses;
+  }
+
+  return getSpeciesAbilityBonuses(wizard?.race);
+}
+
+function hasValidCustomAbilityBonuses(wizard) {
+  if (wizard?.racialBonusRule !== 'custom') return true;
+  const plus2 = wizard?.customRacialBonuses?.plus2;
+  const plus1 = wizard?.customRacialBonuses?.plus1;
+  return !!plus2 && !!plus1 && plus2 !== plus1;
+}
+
+function getPointBuyCost(score) {
+  return POINT_BUY_COST_BY_SCORE[score] ?? 0;
+}
+
+function getPointBuySpent(abilities) {
+  return STAT_KEYS.reduce((sum, stat) => {
+    const score = parseInt(abilities?.[stat], 10);
+    if (!Number.isFinite(score)) return sum;
+    return sum + getPointBuyCost(Math.max(8, Math.min(15, score)));
+  }, 0);
+}
 
 // ─── Initial wizard state ─────────────────────────────────────────────────────
 const INITIAL_STATE = {
@@ -68,7 +125,9 @@ const INITIAL_STATE = {
     str: null, dex: null, con: null,
     int: null, wis: null, cha: null,
   },
-  abilityMode: 'standard',  // 'standard' | 'roll'
+  abilityMode: 'standard',  // 'standard' | 'roll' | 'pointbuy'
+  racialBonusRule: 'species', // 'species' | 'custom'
+  customRacialBonuses: { plus2: null, plus1: null },
 };
 
 export default function CharacterCreationWizard() {
@@ -114,6 +173,11 @@ export default function CharacterCreationWizard() {
             return true; // optional
       case STEPS.BACKGROUND: return wizard.background !== null;
       case STEPS.ABILITIES:
+          if (!hasValidCustomAbilityBonuses(wizard)) return false;
+          if (wizard.abilityMode === 'pointbuy') {
+            return Object.values(wizard.abilities).every(v => v !== null) &&
+              getPointBuySpent(wizard.abilities) === POINT_BUY_TOTAL;
+          }
           return Object.values(wizard.abilities).every(v => v !== null);
       case STEPS.REVIEW: return true;
       default:               return false;
@@ -128,14 +192,7 @@ export default function CharacterCreationWizard() {
     const abilities  = wizard.abilities;
 
     // Apply racial ability bonuses on top of assigned scores
-    const racialBonuses = { str:0, dex:0, con:0, int:0, wis:0, cha:0 };
-    for (const bonus of (race?.abilityBonuses ?? [])) {
-      if (bonus.type === 'fixed') {
-        for (const [stat, val] of Object.entries(bonus.bonuses)) {
-          racialBonuses[stat] = (racialBonuses[stat] ?? 0) + val;
-        }
-      }
-    }
+    const racialBonuses = getAppliedAbilityBonuses(wizard);
 
 
     const finalAbilities = {
@@ -156,7 +213,6 @@ export default function CharacterCreationWizard() {
       race:           race?.name ?? null,
       raceSource:     race?.source ?? null,
       level:          1,
-      eats: [], 
 
       // Save as nested object — Character.js reads this.abilities.str etc.
       abilities: {
@@ -168,14 +224,12 @@ export default function CharacterCreationWizard() {
         cha: finalAbilities.cha,
       },
 
-      classId:        charClass?.name?.toLowerCase().replace(/\s+/g, '_') ?? null,
+      classId:        wizard.charClass.id,
       classSource:    charClass?.source ?? null,
-      subclassId:     wizard.subclass?.shortName?.toLowerCase().replace(/\s+/g, '_') ?? null,
+      subclassId:     wizard.subclass?.id ?? null,
       subclassSource: wizard.subclass?.source ?? null,
       background:     background?.name ?? null,
       backgroundSource: background?.source ?? null,
-      classId: wizard.charClass.id,     // Saves 'warlock'
-      subclassId: wizard.subclass?.id,  // Saves 'hexblade'
 
       proficiencyBonus: 2,
 
@@ -202,7 +256,7 @@ export default function CharacterCreationWizard() {
 
 // Apply feat effects
 let newCharWithFeat = wizard.feat
-  ? applyFeatEffects(newChar, wizard.feat.name, wizard.featChoices)
+  ? applyFeatEffects(newChar, wizard.feat.name, wizard.featChoices, wizard.feat)
   : newChar;
 
 // Save feat to character
@@ -691,7 +745,7 @@ function FeatStep({ wizard, update }) {
       return;
     }
 
-    const effect = FEAT_EFFECTS[feat.name];
+    const effect = feat;
     if (effect?.abilityBonus?.type === 'choice') {
       // Needs a choice — open modal first
       setPendingFeat(feat);
@@ -796,7 +850,7 @@ function FeatStep({ wizard, update }) {
             </Text>
 
             <View style={styles.modalOptions}>
-              {FEAT_EFFECTS[pendingFeat?.name]?.abilityBonus?.from?.map(stat => (
+              {pendingFeat?.abilityBonus?.from?.map(stat => (
                 <TouchableOpacity
                   key={stat}
                   style={[
@@ -853,21 +907,18 @@ function AbilitiesStep({ wizard, update, setWizard }) {
   const [pendingValue, setPendingValue] = useState(null);
   const [rollResults, setRollResults] = useState({});
 
-  const racialBonuses = { str:0, dex:0, con:0, int:0, wis:0, cha:0 };
-  for (const bonus of (wizard.race?.abilityBonuses ?? [])) {
-    if (bonus.type === 'fixed') {
-      for (const [stat, val] of Object.entries(bonus.bonuses)) {
-        racialBonuses[stat] += val;
-      }
-    }
-  }
+  const racialBonuses = getAppliedAbilityBonuses(wizard);
 
   const switchMode = (newMode) => {
+    const resetAbilities = newMode === 'pointbuy'
+      ? { str:8, dex:8, con:8, int:8, wis:8, cha:8 }
+      : { str:null, dex:null, con:null, int:null, wis:null, cha:null };
+
     update('abilityMode', newMode);
     setWizard(w => ({
       ...w,
       abilityMode: newMode,
-      abilities: { str:null, dex:null, con:null, int:null, wis:null, cha:null },
+      abilities: resetAbilities,
     }));
     setPendingValue(null);
     setRollResults({});
@@ -909,6 +960,41 @@ function AbilitiesStep({ wizard, update, setWizard }) {
     update('abilities', newAbilities);
   };
 
+  const pointBuySpent = mode === 'pointbuy' ? getPointBuySpent(wizard.abilities) : 0;
+  const pointBuyRemaining = POINT_BUY_TOTAL - pointBuySpent;
+
+  const updatePointBuyStat = (stat, delta) => {
+    if (mode !== 'pointbuy') return;
+    const current = parseInt(wizard.abilities?.[stat], 10);
+    const safeCurrent = Number.isFinite(current) ? current : 8;
+    const next = safeCurrent + delta;
+    if (next < 8 || next > 15) return;
+
+    const deltaCost = getPointBuyCost(next) - getPointBuyCost(safeCurrent);
+    if (deltaCost > pointBuyRemaining) return;
+
+    update('abilities', { ...wizard.abilities, [stat]: next });
+  };
+
+  const setCustomBonus = (slot, stat) => {
+    if (wizard.racialBonusRule !== 'custom') return;
+    const current = wizard.customRacialBonuses ?? { plus2: null, plus1: null };
+    const next = {
+      ...current,
+      [slot]: current[slot] === stat ? null : stat,
+    };
+
+    if (next.plus2 && next.plus1 && next.plus2 === next.plus1) {
+      if (slot === 'plus2') {
+        next.plus1 = null;
+      } else {
+        next.plus2 = null;
+      }
+    }
+
+    update('customRacialBonuses', next);
+  };
+
   const conScore = (wizard.abilities.con ?? 0) + racialBonuses.con;
   const conMod   = wizard.abilities.con !== null
     ? Math.floor((conScore - 10) / 2)
@@ -936,6 +1022,92 @@ function AbilitiesStep({ wizard, update, setWizard }) {
             Roll Stats
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modeButton, mode === 'pointbuy' && styles.modeButtonActive]}
+          onPress={() => switchMode('pointbuy')}
+        >
+          <Text style={[styles.modeButtonText, mode === 'pointbuy' && styles.modeButtonTextActive]}>
+            Point Buy
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {mode === 'pointbuy' && (
+        <View style={styles.pointBuySummary}>
+          <Text style={styles.pointBuySummaryText}>Points Remaining</Text>
+          <Text style={styles.pointBuySummaryValue}>{pointBuyRemaining}</Text>
+          <Text style={styles.pointBuySummaryHint}>27-point budget · scores 8 to 15</Text>
+        </View>
+      )}
+
+      <View style={styles.bonusRuleSection}>
+        <Text style={styles.bonusRuleTitle}>Ability Bonus Rule</Text>
+        <View style={styles.bonusRuleToggle}>
+          <TouchableOpacity
+            style={[styles.bonusRuleButton, wizard.racialBonusRule === 'species' && styles.bonusRuleButtonActive]}
+            onPress={() => update('racialBonusRule', 'species')}
+          >
+            <Text style={[styles.bonusRuleButtonText, wizard.racialBonusRule === 'species' && styles.bonusRuleButtonTextActive]}>
+              Species Default
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.bonusRuleButton, wizard.racialBonusRule === 'custom' && styles.bonusRuleButtonActive]}
+            onPress={() => update('racialBonusRule', 'custom')}
+          >
+            <Text style={[styles.bonusRuleButtonText, wizard.racialBonusRule === 'custom' && styles.bonusRuleButtonTextActive]}>
+              Custom +2/+1
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {wizard.racialBonusRule === 'custom' && (
+          <View style={styles.customBonusPicker}>
+            <Text style={styles.customBonusHint}>Pick one stat for +2 and a different stat for +1.</Text>
+
+            <Text style={styles.customBonusLabel}>+2 Bonus</Text>
+            <View style={styles.customBonusChipRow}>
+              {STAT_KEYS.map((stat) => {
+                const isSelected = wizard.customRacialBonuses?.plus2 === stat;
+                return (
+                  <TouchableOpacity
+                    key={`plus2-${stat}`}
+                    style={[styles.customBonusChip, isSelected && styles.customBonusChipActive]}
+                    onPress={() => setCustomBonus('plus2', stat)}
+                  >
+                    <Text style={[styles.customBonusChipText, isSelected && styles.customBonusChipTextActive]}>
+                      {stat.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={styles.customBonusLabel}>+1 Bonus</Text>
+            <View style={styles.customBonusChipRow}>
+              {STAT_KEYS.map((stat) => {
+                const isSelected = wizard.customRacialBonuses?.plus1 === stat;
+                const blocked = wizard.customRacialBonuses?.plus2 === stat;
+                return (
+                  <TouchableOpacity
+                    key={`plus1-${stat}`}
+                    style={[
+                      styles.customBonusChip,
+                      isSelected && styles.customBonusChipActive,
+                      blocked && !isSelected && styles.customBonusChipBlocked,
+                    ]}
+                    onPress={() => setCustomBonus('plus1', stat)}
+                    disabled={blocked && !isSelected}
+                  >
+                    <Text style={[styles.customBonusChipText, isSelected && styles.customBonusChipTextActive]}>
+                      {stat.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        )}
       </View>
 
       {mode === 'standard' && (
@@ -991,6 +1163,9 @@ function AbilitiesStep({ wizard, update, setWizard }) {
           : '—';
         const rollResult = rollResults[stat];
         const isPending  = mode === 'standard' && pendingValue !== null;
+        const canDecreasePointBuy = mode === 'pointbuy' && (baseVal ?? 8) > 8;
+        const canIncreasePointBuy = mode === 'pointbuy' && (baseVal ?? 8) < 15 &&
+          (getPointBuyCost((baseVal ?? 8) + 1) - getPointBuyCost(baseVal ?? 8)) <= pointBuyRemaining;
 
         return (
           <TouchableOpacity
@@ -1023,6 +1198,25 @@ function AbilitiesStep({ wizard, update, setWizard }) {
               </TouchableOpacity>
             )}
 
+            {mode === 'pointbuy' && (
+              <View style={styles.pointBuyControls}>
+                <TouchableOpacity
+                  style={[styles.pointBuyButton, !canDecreasePointBuy && styles.pointBuyButtonDisabled]}
+                  onPress={() => updatePointBuyStat(stat, -1)}
+                  disabled={!canDecreasePointBuy}
+                >
+                  <Ionicons name="remove" size={14} color={colors.textPrimary} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pointBuyButton, !canIncreasePointBuy && styles.pointBuyButtonDisabled]}
+                  onPress={() => updatePointBuyStat(stat, 1)}
+                  disabled={!canIncreasePointBuy}
+                >
+                  <Ionicons name="add" size={14} color={colors.textPrimary} />
+                </TouchableOpacity>
+              </View>
+            )}
+
             <View style={styles.statScoreBox}>
               {baseVal !== null ? (
                 <>
@@ -1035,6 +1229,9 @@ function AbilitiesStep({ wizard, update, setWizard }) {
                     )}
                   </Text>
                   <Text style={styles.statMod}>{modString}</Text>
+                  {mode === 'pointbuy' && (
+                    <Text style={styles.pointBuyCostText}>Cost {getPointBuyCost(baseVal)}</Text>
+                  )}
                 </>
               ) : (
                 <Text style={styles.statEmpty}>—</Text>
@@ -1064,14 +1261,7 @@ function ReviewStep({ wizard, onEdit, onCancel, onConfirm }) {
   const bg        = wizard.background;
   const abilities = wizard.abilities;
 
-  const racialBonuses = { str:0, dex:0, con:0, int:0, wis:0, cha:0 };
-  for (const bonus of (race?.abilityBonuses ?? [])) {
-    if (bonus.type === 'fixed') {
-      for (const [stat, val] of Object.entries(bonus.bonuses)) {
-        racialBonuses[stat] += val;
-      }
-    }
-  }
+  const racialBonuses = getAppliedAbilityBonuses(wizard);
 
   const finalAbilities = {};
   for (const stat of STAT_KEYS) {
@@ -1099,7 +1289,9 @@ function ReviewStep({ wizard, onEdit, onCancel, onConfirm }) {
         <Text style={styles.reviewValue}>{race?.name ?? '—'}</Text>
         {race && (
           <Text style={styles.reviewMeta}>
-            {formatAbilityBonuses(race.abilityBonuses)}
+            {wizard.racialBonusRule === 'custom'
+              ? 'Custom ability bonuses: +2/+1 assigned'
+              : formatAbilityBonuses(race.abilityBonuses)}
             {race.speed ? `  ·  Speed ${race.speed}ft` : ''}
             {race.darkvision ? `  ·  Darkvision ${race.darkvision}ft` : ''}
           </Text>
@@ -1362,7 +1554,6 @@ const styles = StyleSheet.create({
   },
   nextButtonDisabled: {
     backgroundColor: colors.surfaceDeep,
-    ...shadows.none,
   },
   nextButtonText: {
     color: colors.textPrimary,
@@ -1403,13 +1594,16 @@ const styles = StyleSheet.create({
   // Mode toggle
   modeToggle: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     backgroundColor: colors.surfaceDeep,
     borderRadius: radius.md,
     padding: 3,
     marginBottom: spacing.lg,
+    gap: spacing.xs,
   },
   modeButton: {
-    flex: 1,
+    minWidth: 110,
+    flexGrow: 1,
     paddingVertical: spacing.sm,
     alignItems: 'center',
     borderRadius: radius.sm,
@@ -1423,6 +1617,111 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
   modeButtonTextActive: {
+    color: colors.textPrimary,
+  },
+
+  pointBuySummary: {
+    backgroundColor: colors.surfaceDeep,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    alignItems: 'center',
+    marginBottom: spacing.lg,
+  },
+  pointBuySummaryText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  pointBuySummaryValue: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: colors.gold,
+    marginVertical: 2,
+  },
+  pointBuySummaryHint: {
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+
+  bonusRuleSection: {
+    backgroundColor: colors.surfaceDeep,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  bonusRuleTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
+  },
+  bonusRuleToggle: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  bonusRuleButton: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceDeep2,
+  },
+  bonusRuleButtonActive: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentDim,
+  },
+  bonusRuleButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  bonusRuleButtonTextActive: {
+    color: colors.textPrimary,
+  },
+  customBonusPicker: {
+    marginTop: spacing.md,
+  },
+  customBonusHint: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginBottom: spacing.sm,
+  },
+  customBonusLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: spacing.xs,
+  },
+  customBonusChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    marginBottom: spacing.sm,
+  },
+  customBonusChip: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.surfaceDeep2,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  customBonusChipActive: {
+    backgroundColor: colors.accentDim,
+    borderColor: colors.accent2,
+  },
+  customBonusChipBlocked: {
+    opacity: 0.35,
+  },
+  customBonusChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  customBonusChipTextActive: {
     color: colors.textPrimary,
   },
 
@@ -1554,6 +1853,27 @@ const styles = StyleSheet.create({
   diceButtonText: {
     fontSize: 12,
     color: colors.accentSoft,
+  },
+  pointBuyControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginRight: spacing.md,
+  },
+  pointBuyButton: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceDeep,
+  },
+  pointBuyButtonDisabled: {
+    opacity: 0.35,
+  },
+  pointBuyCostText: {
+    fontSize: 10,
+    color: colors.textMuted,
   },
 
   // HP preview

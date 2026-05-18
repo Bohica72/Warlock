@@ -260,7 +260,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   levelHeaderLeft:        { flex: 1 },
-  levelHeader:            { color: colors.accent, fontSize: 12, fontWeight: 'bold', letterSpacing: 0.5 },
+  levelHeader:            { color: colors.gold, fontSize: 12, fontWeight: 'bold', letterSpacing: 0.5 },
   levelHeaderTextCurrent: { color: colors.gold },
   currentBadge:           { color: colors.gold, fontSize: 10, fontWeight: 'normal', fontStyle: 'italic' },
   levelMeta:              { color: colors.textMuted, fontSize: 10, marginTop: 2 },

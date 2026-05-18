@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
   StyleSheet, Alert, ScrollView, Modal
@@ -9,7 +9,7 @@ import { getEquippedBonuses, MAX_ATTUNEMENT } from '../utils/BonusEngine';
 import ItemCard from '../components/ItemCard';
 import { patchCharacter } from '../utils/CharacterStore';
 import { colors, spacing, radius, typography, shadows, sharedStyles } from '../styles/theme';
-import { getWeaponDamageByName, STANDARD_WEAPON_OPTIONS, getWeaponTemplate } from '../utils/WeaponStore';
+import { STANDARD_WEAPON_OPTIONS, getWeaponTemplate } from '../utils/WeaponStore';
 
 const SAVING_THROWS = [
   { key: 'str', label: 'Strength' },
@@ -69,12 +69,40 @@ function parseOptionalNumber(value) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+function QuantityInput({ value, onCommit, style }) {
+  const [draft, setDraft] = React.useState(String(value));
+
+  React.useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const handleBlur = () => {
+    const num = parseInt(draft, 10);
+    if (!isNaN(num) && num >= 0) {
+      onCommit(num);
+    } else {
+      setDraft(String(value));
+    }
+  };
+
+  return (
+    <TextInput
+      style={style}
+      keyboardType="numeric"
+      value={draft}
+      onChangeText={setDraft}
+      onBlur={handleBlur}
+    />
+  );
+}
+
 function getDefaultCustomItemState() {
   return {
     name: '',
     description: '',
     type: '',
     baseWeapon: '',
+    addProficiencyToDamage: false,
     acBonus: 0,
     attackBonus: 0,
     damageBonus: 0,
@@ -85,23 +113,80 @@ function getDefaultCustomItemState() {
   };
 }
 
-export default function InventoryScreen({ route, onCharacterChange }) {
+export default function InventoryScreen({ route, navigation, onCharacterChange }) {
   const { character } = route.params;
+  const handledEditRequestRef = useRef(null);
 
   const [inventory, setInventory]         = useState(character.inventory ?? []);
   const [searchQuery, setSearchQuery]     = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [selectedItem, setSelectedItem]   = useState(null);
+  const [selectedEntry, setSelectedEntry] = useState(null);
 
   // Custom item creation
   const [customModalVisible, setCustomModalVisible] = useState(false);
   const [customItem, setCustomItem] = useState(getDefaultCustomItemState());
+  const [customEditOriginalName, setCustomEditOriginalName] = useState(null);
+  const showSearchOverlay = searchResults.length > 0;
 
   const { attunedCount } = getEquippedBonuses(inventory, character.customItems ?? []);
 
   useEffect(() => {
     setInventory(character.inventory ?? []);
   }, [character]);
+
+  const closeCustomModal = useCallback(() => {
+    setCustomModalVisible(false);
+    setCustomItem(getDefaultCustomItemState());
+    setCustomEditOriginalName(null);
+  }, []);
+
+  const openCreateCustomItemModal = useCallback(() => {
+    setCustomItem(getDefaultCustomItemState());
+    setCustomEditOriginalName(null);
+    setCustomModalVisible(true);
+  }, []);
+
+  const openEditCustomItemModal = useCallback((itemName) => {
+    const existingCustomItem = (character.customItems ?? []).find((item) => (
+      item?.custom && item?.Name === itemName
+    ));
+
+    if (!existingCustomItem) {
+      Alert.alert('Custom Item Not Found', 'Could not find that custom item to edit.');
+      return;
+    }
+
+    setCustomItem({
+      name: existingCustomItem.Name ?? '',
+      description: existingCustomItem.Description ?? '',
+      type: existingCustomItem.ObjectType ?? 'Wondrous Item',
+      baseWeapon: existingCustomItem.BaseItem?.split('|')[0] ?? '',
+      addProficiencyToDamage: !!(existingCustomItem.AddProficiencyToDamage ?? existingCustomItem.addProficiencyToDamage),
+      acBonus: existingCustomItem.BonusAC ?? 0,
+      attackBonus: existingCustomItem.BonusWeapon ?? 0,
+      damageBonus: existingCustomItem.BonusDamage ?? 0,
+      skillBonusValue: existingCustomItem.BonusSkillValue ?? 1,
+      saveBonuses: existingCustomItem.BonusSaveValues ?? {},
+      skillBonuses: existingCustomItem.BonusSkills ?? [],
+      uses: existingCustomItem.Charges ?? null,
+    });
+    setCustomEditOriginalName(existingCustomItem.Name);
+    setCustomModalVisible(true);
+  }, [character.customItems]);
+
+  useEffect(() => {
+    const requestedName = route.params?.editCustomWeaponName;
+    const requestId = route.params?.editCustomWeaponRequestId;
+    if (!requestedName || !requestId || handledEditRequestRef.current === requestId) return;
+
+    handledEditRequestRef.current = requestId;
+    openEditCustomItemModal(requestedName);
+    navigation?.setParams?.({
+      editCustomWeaponName: undefined,
+      editCustomWeaponRequestId: undefined,
+    });
+  }, [navigation, openEditCustomItemModal, route.params?.editCustomWeaponName, route.params?.editCustomWeaponRequestId]);
 
   const updateInventory = useCallback(async (newInventory, extraUpdates = {}) => {
     setInventory(newInventory);
@@ -116,6 +201,18 @@ export default function InventoryScreen({ route, onCharacterChange }) {
   const handleSearch = (text) => {
     setSearchQuery(text);
     setSearchResults(searchItems(text, 30, character.customItems ?? []));
+  };
+
+  const handleDecrementItem = async (itemName) => {
+    const entry = inventory.find(e => e.itemName === itemName);
+    if (!entry) return;
+    if (entry.quantity > 1) {
+      await updateInventory(inventory.map(e =>
+        e.itemName === itemName ? { ...e, quantity: e.quantity - 1 } : e
+      ));
+    } else {
+      handleRemoveItem(itemName);
+    }
   };
 
   const handleRemoveItem = (itemName) => {
@@ -140,6 +237,9 @@ export default function InventoryScreen({ route, onCharacterChange }) {
     } else {
       await updateInventory([...inventory, {
         itemName: item.Name,
+        objectType: item.ObjectType ?? null,
+        type: item.Type ?? null,
+        baseItem: item.BaseItem ?? null,
         quantity: 1,
         equipped: false,
         attuned: false,
@@ -189,11 +289,12 @@ export default function InventoryScreen({ route, onCharacterChange }) {
     ));
   };
 
-  const handleCreateCustomItem = async () => {
+  const handleSaveCustomItem = async () => {
     const trimmedName = customItem.name.trim();
     const trimmedDescription = customItem.description.trim();
     const trimmedType = customItem.type.trim() || 'Wondrous Item';
     const weaponTemplate = trimmedType === 'Weapon' ? getWeaponTemplate(customItem.baseWeapon) : null;
+    const isEditing = !!customEditOriginalName;
 
     if (!trimmedName) {
       Alert.alert('Error', 'Item name is required');
@@ -205,7 +306,9 @@ export default function InventoryScreen({ route, onCharacterChange }) {
       return;
     }
 
-    const conflictingItem = getItemByName(trimmedName, character.customItems ?? []);
+    const conflictingItem = (character.customItems ?? []).find((item) => (
+      item?.Name === trimmedName && (!isEditing || item?.Name !== customEditOriginalName)
+    ));
     if (conflictingItem) {
       Alert.alert('Duplicate Item', 'An item with that name already exists. Please choose a unique name.');
       return;
@@ -221,6 +324,7 @@ export default function InventoryScreen({ route, onCharacterChange }) {
       BonusAC: customItem.acBonus || null,
       BonusWeapon: customItem.attackBonus || null,
       BonusDamage: customItem.damageBonus || null,
+      AddProficiencyToDamage: trimmedType === 'Weapon' ? !!customItem.addProficiencyToDamage : false,
       BonusSaveValues: customItem.saveBonuses,
       BonusSkills: customItem.skillBonuses,
       BonusSkillValue: customItem.skillBonusValue || 1,
@@ -235,28 +339,49 @@ export default function InventoryScreen({ route, onCharacterChange }) {
       } : {}),
     };
 
-    const nextCustomItems = [...(character.customItems ?? []), newItem];
+    const nextCustomItems = isEditing
+      ? (character.customItems ?? []).map((item) => (
+          item?.Name === customEditOriginalName ? newItem : item
+        ))
+      : [...(character.customItems ?? []), newItem];
     character.customItems = nextCustomItems;
 
-    const existing = inventory.find(e => e.itemName === newItem.Name);
-    const nextInventory = existing
-      ? inventory.map(e =>
-          e.itemName === newItem.Name ? { ...e, quantity: e.quantity + 1 } : e
-        )
-      : [...inventory, {
-          itemName: newItem.Name,
-          quantity: 1,
-          equipped: false,
-          attuned: false,
-          charges: newItem.Charges ?? null,
-        }];
+    const nextInventory = isEditing
+      ? inventory.map((entry) => {
+          if (entry.itemName !== customEditOriginalName) return entry;
+          return {
+            ...entry,
+            itemName: newItem.Name,
+            objectType: newItem.ObjectType ?? entry.objectType ?? null,
+            type: newItem.Type ?? entry.type ?? null,
+            baseItem: newItem.BaseItem ?? entry.baseItem ?? null,
+            charges: newItem.Charges ?? entry.charges ?? null,
+          };
+        })
+      : (() => {
+          const existing = inventory.find(e => e.itemName === newItem.Name);
+          if (existing) {
+            return inventory.map(e =>
+              e.itemName === newItem.Name ? { ...e, quantity: e.quantity + 1 } : e
+            );
+          }
+          return [...inventory, {
+            itemName: newItem.Name,
+            objectType: newItem.ObjectType ?? null,
+            type: newItem.Type ?? null,
+            baseItem: newItem.BaseItem ?? null,
+            quantity: 1,
+            equipped: false,
+            attuned: false,
+            charges: newItem.Charges ?? null,
+          }];
+        })();
 
     await updateInventory(nextInventory, { customItems: nextCustomItems });
     setSearchQuery('');
     setSearchResults([]);
     setSelectedItem(null);
-    setCustomItem(getDefaultCustomItemState());
-    setCustomModalVisible(false);
+    closeCustomModal();
   };
 
   const setSaveBonus = (save, value) => {
@@ -281,81 +406,51 @@ export default function InventoryScreen({ route, onCharacterChange }) {
   const renderInventoryItem = ({ item: entry }) => {
     const itemData = getItemByName(entry.itemName, character.customItems ?? []);
     const rColor   = rarityColor(itemData?.Rarity);
-    const weaponLookupName = [
-      itemData?.BaseItem?.split('|')[0],
-      itemData?.BaseWeaponName,
-      entry?.BaseWeaponName,
-      entry.itemName,
-    ].find(value => typeof value === 'string' && value.trim().length > 0);
-    const dmgInfo = getWeaponDamageByName(weaponLookupName);
-    const damageText = dmgInfo ? `${dmgInfo.dice} ${dmgInfo.type}` : null;
-    const metaParts = [
-      itemData?.ObjectType,
-      damageText,
-      entry.attuned ? 'Attuned' : null,
-    ].filter(Boolean);
-
     return (
       <TouchableOpacity
         style={[styles.inventoryRow, { borderLeftColor: rColor }]}
-        onLongPress={() => setSelectedItem(itemData)}
+        onLongPress={() => { setSelectedItem(itemData); setSelectedEntry(entry); }}
         delayLongPress={400}
         activeOpacity={1}
       >
-        <View style={styles.inventoryTop}>
-          <View style={styles.inventoryTitleRow}>
-            <Text style={styles.inventoryName}>{entry.itemName}</Text>
-            {itemData?.Rarity && (
-              <Text style={[styles.rarityBadge, { color: rColor }]}>
-                {itemData.Rarity}
-              </Text>
-            )}
+        <View style={styles.inventoryMainRow}>
+          <Text style={styles.inventoryName} numberOfLines={1}>{entry.itemName}</Text>
+          {itemData?.Rarity && (
+            <Text style={[styles.rarityBadge, { color: rColor }]}>
+              {itemData.Rarity}
+            </Text>
+          )}
+          <View style={styles.quantityRow}>
+            <QuantityInput
+              style={[styles.controlInput, styles.quantityInput]}
+              value={entry.quantity}
+              onCommit={(num) => handleQuantityChange(entry.itemName, String(num))}
+            />
           </View>
-          <View style={styles.inventoryActionRow}>
-            {metaParts.length > 0 ? (
-              <Text style={styles.itemType} numberOfLines={1}>
-                {metaParts.join(' • ')}
-              </Text>
-            ) : (
-              <View style={styles.itemTypeSpacer} />
-            )}
-
-            <View style={styles.quantityRow}>
-              <TextInput
-                style={[styles.controlInput, styles.quantityInput]}
-                keyboardType="numeric"
-                value={String(entry.quantity)}
-                onChangeText={(v) => handleQuantityChange(entry.itemName, v)}
-              />
-            </View>
-
-            <TouchableOpacity
-              style={[styles.iconButton, entry.equipped && styles.equipButtonActive]}
-              onPress={() => handleToggleEquip(entry.itemName)}
-              accessibilityRole="button"
-              accessibilityLabel={entry.equipped ? `Unequip ${entry.itemName}` : `Equip ${entry.itemName}`}
-            >
-              <Ionicons
-                name={entry.equipped ? 'shield-checkmark' : 'shield-outline'}
-                size={12}
-                color={entry.equipped ? colors.textPrimary : colors.textMuted}
-              />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => handleRemoveItem(entry.itemName)}
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${entry.itemName}`}
-            >
-              <Ionicons name="trash-outline" size={12} color={colors.textPrimary} />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[styles.iconButton, entry.equipped && styles.equipButtonActive]}
+            onPress={() => handleToggleEquip(entry.itemName)}
+            accessibilityRole="button"
+            accessibilityLabel={entry.equipped ? `Unequip ${entry.itemName}` : `Equip ${entry.itemName}`}
+          >
+            <Ionicons
+              name={entry.equipped ? 'shield-checkmark' : 'shield-outline'}
+              size={12}
+              color={entry.equipped ? colors.textPrimary : colors.textMuted}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => handleRemoveItem(entry.itemName)}
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${entry.itemName}`}
+          >
+            <Ionicons name="trash-outline" size={12} color={colors.textPrimary} />
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.inventoryControls}>
-
-          {entry.charges !== null && (
+        {entry.charges != null && (
+          <View style={styles.inventoryControls}>
             <View style={[styles.controlGroup, styles.chargeGroup]}>
               <Text style={styles.controlLabel}>CHARGES</Text>
               <View style={styles.chargeRow}>
@@ -368,8 +463,8 @@ export default function InventoryScreen({ route, onCharacterChange }) {
                 />
               </View>
             </View>
-          )}
-        </View>
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -416,72 +511,92 @@ export default function InventoryScreen({ route, onCharacterChange }) {
         {/* Create Custom Item Button */}
         <TouchableOpacity
           style={styles.createCustomButton}
-          onPress={() => setCustomModalVisible(true)}
+          onPress={openCreateCustomItemModal}
         >
           <Ionicons name="add-circle" size={16} color={colors.textPrimary} />
           <Text style={styles.createCustomText}>Create Custom Item</Text>
         </TouchableOpacity>
 
-        {/* Search results */}
-        {searchResults.length > 0 && (
-  <View style={styles.searchResults}>
-    <FlatList
-      data={searchResults}
-      keyExtractor={(item, index) => `${item.Name}-${index}`}
-      renderItem={({ item }) => (
-        <TouchableOpacity
-          style={styles.searchResultRow}
-          onPress={() => { setSelectedItem(item); setSearchResults([]); }}
-        >
-          <View style={styles.searchResultLeft}>
-            <Text style={styles.searchResultName}>{item.Name}</Text>
-            <Text style={styles.searchResultType}>{item.ObjectType}</Text>
-          </View>
-          {item.Rarity && (
-            <Text style={[styles.searchResultRarity, { color: rarityColor(item.Rarity) }]}>
-              {item.Rarity}
-            </Text>
-          )}
-        </TouchableOpacity>
-      )}
-      keyboardShouldPersistTaps="handled"
-    />
-  </View>
-)}
-
       </View>
 
       {/* Inventory list */}
-      <FlatList
-        data={inventory}
-        keyExtractor={(item, index) => `${item.itemName}-${index}`}
-        renderItem={renderInventoryItem}
-        contentContainerStyle={{ padding: spacing.md, paddingBottom: 40 }}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Ionicons name="bag-outline" size={40} color={colors.textDisabled} />
-            <Text style={styles.emptyText}>No items in inventory</Text>
-            <Text style={styles.emptySubtext}>Search above to add items</Text>
+      <View
+        style={styles.inventoryListWrapper}
+        pointerEvents={showSearchOverlay ? 'none' : 'auto'}
+      >
+        <FlatList
+          data={[...inventory].sort((a, b) => (b.equipped ? 1 : 0) - (a.equipped ? 1 : 0))}
+          keyExtractor={(item, index) => `${item.itemName}-${index}`}
+          renderItem={renderInventoryItem}
+          scrollEnabled={!showSearchOverlay}
+          contentContainerStyle={{ padding: spacing.md, paddingBottom: 40 }}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Ionicons name="bag-outline" size={40} color={colors.textDisabled} />
+              <Text style={styles.emptyText}>No items in inventory</Text>
+              <Text style={styles.emptySubtext}>Search above to add items</Text>
+            </View>
+          }
+        />
+      </View>
+
+      {showSearchOverlay && (
+        <View style={styles.searchOverlayLayer} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.searchBackdrop}
+            activeOpacity={1}
+            onPress={() => setSearchResults([])}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss search results"
+          />
+
+          <View style={styles.searchResults}>
+            <FlatList
+              data={searchResults}
+              keyExtractor={(item, index) => `${item.Name}-${index}`}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.searchResultRow}
+                  onPress={() => { setSelectedItem(item); setSearchResults([]); }}
+                >
+                  <View style={styles.searchResultLeft}>
+                    <Text style={styles.searchResultName}>{item.Name}</Text>
+                    <Text style={styles.searchResultType}>{item.ObjectType}</Text>
+                  </View>
+                  {item.Rarity && (
+                    <Text style={[styles.searchResultRarity, { color: rarityColor(item.Rarity) }]}>
+                      {item.Rarity}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            />
           </View>
-        }
-      />
+        </View>
+      )}
 
       <ItemCard
         item={selectedItem}
-        onClose={() => setSelectedItem(null)}
+        onClose={() => { setSelectedItem(null); setSelectedEntry(null); }}
         onAdd={handleAddItem}
+        inventoryEntry={selectedEntry}
+        onEquip={() => { handleToggleEquip(selectedEntry.itemName); setSelectedItem(null); setSelectedEntry(null); }}
+        onRemove={() => { handleDecrementItem(selectedEntry.itemName); setSelectedItem(null); setSelectedEntry(null); }}
       />
 
       {/* Custom Item Modal */}
       <Modal
         visible={customModalVisible}
         animationType="slide"
-        onRequestClose={() => setCustomModalVisible(false)}
+        onRequestClose={closeCustomModal}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Create Custom Item</Text>
-            <TouchableOpacity onPress={() => setCustomModalVisible(false)}>
+            <Text style={styles.modalTitle}>{customEditOriginalName ? 'Edit Custom Item' : 'Create Custom Item'}</Text>
+            <TouchableOpacity onPress={closeCustomModal}>
               <Ionicons name="close" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
@@ -540,6 +655,20 @@ export default function InventoryScreen({ route, onCharacterChange }) {
                     );
                   })}
                 </View>
+                <TouchableOpacity
+                  style={styles.checkboxRow}
+                  onPress={() => setCustomItem(prev => ({
+                    ...prev,
+                    addProficiencyToDamage: !prev.addProficiencyToDamage,
+                  }))}
+                >
+                  <Ionicons
+                    name={customItem.addProficiencyToDamage ? 'checkbox' : 'square-outline'}
+                    size={20}
+                    color={colors.textPrimary}
+                  />
+                  <Text style={styles.checkboxLabel}>Add proficiency bonus to damage</Text>
+                </TouchableOpacity>
               </>
             )}
             <Text style={styles.fieldLabel}>AC Bonus</Text>
@@ -667,15 +796,15 @@ export default function InventoryScreen({ route, onCharacterChange }) {
           <View style={styles.modalFooter}>
             <TouchableOpacity
               style={styles.cancelButton}
-              onPress={() => setCustomModalVisible(false)}
+              onPress={closeCustomModal}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.createButton}
-              onPress={handleCreateCustomItem}
+              onPress={handleSaveCustomItem}
             >
-              <Text style={styles.createButtonText}>Create Item</Text>
+              <Text style={styles.createButtonText}>{customEditOriginalName ? 'Save Changes' : 'Create Item'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -746,9 +875,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.sm,
     maxHeight: 520,
-    zIndex: 10,
-    elevation: 10,
+    overflow: 'hidden',
+    zIndex: 2,
+    elevation: 130,
     ...shadows.card,
+  },
+  searchOverlayLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 120,
+    elevation: 120,
+  },
+  searchBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
   },
 
   searchResultRow: {
@@ -764,21 +903,24 @@ const styles = StyleSheet.create({
   searchResultType: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
   searchResultRarity: { fontSize: 11, fontWeight: 'bold' },
 
+  inventoryListWrapper: {
+    flex: 1,
+  },
+
   // Inventory rows
   inventoryRow: {
     backgroundColor: colors.surface,
     borderRadius: radius.sm,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.xs,
     marginBottom: spacing.xs,
     borderLeftWidth: 3,
     ...shadows.card,
   },
-  inventoryTop: { marginBottom: spacing.xs },
-  inventoryTitleRow: {
+  inventoryMainRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 6,
   },
   inventoryName: {
     color: colors.textPrimary,
@@ -792,12 +934,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: 'uppercase',
     marginLeft: spacing.xs,
-  },
-  itemType: {
-    color: colors.textMuted,
-    fontSize: 10,
-    flex: 1,
-    marginRight: spacing.xs,
   },
   inventoryControls: {
     marginTop: 2,
@@ -814,19 +950,11 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     borderRadius: radius.sm,
     width: 38,
-    minHeight: 28,
+    minHeight: 24,
     textAlign: 'center',
-    paddingVertical: 4,
+    paddingVertical: 2,
     paddingHorizontal: spacing.xs,
     fontSize: 12,
-  },
-  inventoryActionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  itemTypeSpacer: {
-    flex: 1,
   },
   quantityRow: {
     alignItems: 'center',

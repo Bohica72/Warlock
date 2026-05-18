@@ -42,8 +42,8 @@ export const FEAT_EFFECTS = {
 
 // Apply a feat's stat changes directly to a character object
 // Returns updated character — call this on feat confirmation
-export function applyFeatEffects(character, featName, choices = {}) {
-  const effect = FEAT_EFFECTS[featName];
+export function applyFeatEffects(character, featName, choices = {}, featDefinition = null) {
+  const effect = featDefinition ?? FEAT_EFFECTS[featName];
   if (!effect) return character; // flavour-only feat, nothing to apply
 
   let updated = { ...character };
@@ -60,11 +60,18 @@ export function applyFeatEffects(character, featName, choices = {}) {
   // Apply chosen ability bonus — choices.abilityStat or choices.abilityStats[]
   if (effect.abilityBonus?.type === 'choice') {
     const abilities = { ...updated.abilities };
+    const amount = Number(effect.abilityBonus.amount ?? 1);
     const chosen = Array.isArray(choices.abilityStats)
       ? choices.abilityStats
       : [choices.abilityStat].filter(Boolean);
+    if (chosen.length === 0) return updated;
+
+    const increment = chosen.length > 1 && effect.abilityBonus.split
+      ? Math.max(1, Math.floor(amount / chosen.length))
+      : amount;
+
     for (const stat of chosen) {
-      if (stat) abilities[stat] = (abilities[stat] ?? 0) + 1;
+      if (stat) abilities[stat] = (abilities[stat] ?? 0) + increment;
     }
     updated.abilities = abilities;
   }

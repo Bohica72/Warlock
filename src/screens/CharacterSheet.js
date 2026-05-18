@@ -1,9 +1,10 @@
-eimport React from 'react';
+import React from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { Character } from '../models/Character';
 
 export default function CharacterSheet({ characterData }) {
   const character = new Character(characterData);
+  const primaryClass = characterData?.classes?.[0];
 
   const abilities = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
   const abilityNames = {
@@ -33,19 +34,16 @@ export default function CharacterSheet({ characterData }) {
       <View style={styles.header}>
         <Text style={styles.name}>{character.name}</Text>
         <Text style={styles.classInfo}>
-          {characterData.race} {characterData.classes[0].className} {characterData.classes[0].level}
+          {characterData?.race ?? character.race ?? '—'} {primaryClass?.className ?? character.classId} {primaryClass?.level ?? character.level}
         </Text>
       </View>
 
       {/* HP */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Hit Points</Text>
-        <Text style={styles.hpText}>
-          {characterData.hitPoints.current} / {characterData.hitPoints.max}
-          <Text style={styles.sectionTitle}>Armor Class</Text>
-<Text style={styles.hpText}>{character.getArmorClass()}</Text>
-
-        </Text>
+        <Text style={styles.hpText}>{character.hpCurrent} / {character.hpMax}</Text>
+        <Text style={styles.sectionTitle}>Armor Class</Text>
+        <Text style={styles.hpText}>{character.getArmorClass()}</Text>
       </View>
 
       {/* Abilities */}

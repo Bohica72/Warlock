@@ -39,6 +39,7 @@ export default function CharacterTabs({ route, navigation }) {
   const [addTileCallback, setAddTileCallback] = useState(null);
   const [manageFeatsCallback, setManageFeatsCallback] = useState(null);
   const [toggleUnarmedStrikeCallback, setToggleUnarmedStrikeCallback] = useState(null);
+  const [pendingMenuAction, setPendingMenuAction] = useState(null);
   const [createWeaponVisible, setCreateWeaponVisible] = useState(false);
   const [weaponName, setWeaponName] = useState('');
   const [weaponType, setWeaponType] = useState('');
@@ -47,8 +48,11 @@ export default function CharacterTabs({ route, navigation }) {
   const [weaponDescription, setWeaponDescription] = useState('');
   const [weaponBonusWeapon, setWeaponBonusWeapon] = useState('0');
   const [weaponAttunement, setWeaponAttunement] = useState(false);
+  const [weaponAddProficiencyToDamage, setWeaponAddProficiencyToDamage] = useState(false);
+  const [editingCustomWeaponOriginalName, setEditingCustomWeaponOriginalName] = useState(null);
   const [weaponExtraDamageDice, setWeaponExtraDamageDice] = useState('none');
   const [weaponExtraDamageType, setWeaponExtraDamageType] = useState('');
+  const handledInventoryWeaponEditRequestRef = useRef(null);
 
 const resetAndClose = () => {
   setWeaponName('');
@@ -57,6 +61,8 @@ const resetAndClose = () => {
   setWeaponModifier('str');
   setWeaponBonusWeapon('0');
   setWeaponAttunement(false);
+  setWeaponAddProficiencyToDamage(false);
+  setEditingCustomWeaponOriginalName(null);
   setWeaponDescription('');
   
   // Add these two!
@@ -72,9 +78,48 @@ React.useEffect(() => {
     }
   }, [route.params?.activeTab]);
 
+React.useEffect(() => {
+  const requestedName = route.params?.editInventoryCustomWeaponName;
+  const requestId = route.params?.editInventoryCustomWeaponRequestId;
+  if (!requestedName || !requestId || handledInventoryWeaponEditRequestRef.current === requestId) return;
+
+  handledInventoryWeaponEditRequestRef.current = requestId;
+  const existing = (character.inventory ?? []).find((entry) => (
+    entry?.isCustomWeapon && entry?.itemName === requestedName
+  ));
+
+  if (!existing) {
+    Alert.alert('Custom Weapon Not Found', 'Could not find that custom weapon to edit.');
+    navigation?.setParams?.({
+      editInventoryCustomWeaponName: undefined,
+      editInventoryCustomWeaponRequestId: undefined,
+    });
+    return;
+  }
+
+  setWeaponName(existing.itemName ?? '');
+  setWeaponType(existing.Type ?? '');
+  setWeaponDice(existing.damageDie ?? '1d6');
+  setWeaponModifier(existing.modifier ?? 'str');
+  setWeaponDescription(existing.Description ?? existing.description ?? '');
+  setWeaponBonusWeapon(String(parseInt(existing.BonusWeapon ?? 0, 10) || 0));
+  setWeaponAttunement((existing.Attunement ?? 'No') === 'Yes' || !!existing.attuned);
+  setWeaponAddProficiencyToDamage(!!(existing.AddProficiencyToDamage ?? existing.addProficiencyToDamage));
+  setWeaponExtraDamageDice(existing.extraDamageDie ?? 'none');
+  setWeaponExtraDamageType(existing.extraDamageType ?? '');
+  setEditingCustomWeaponOriginalName(existing.itemName);
+  setCreateWeaponVisible(true);
+
+  navigation?.setParams?.({
+    editInventoryCustomWeaponName: undefined,
+    editInventoryCustomWeaponRequestId: undefined,
+  });
+}, [character.inventory, navigation, route.params?.editInventoryCustomWeaponName, route.params?.editInventoryCustomWeaponRequestId]);
+
 const handleSaveCustomWeapon = async () => {
   Keyboard.dismiss();
-  if (!weaponName.trim()) {
+  const trimmedWeaponName = weaponName.trim();
+  if (!trimmedWeaponName) {
     Alert.alert('Missing Name', 'Please give your weapon a name.');
     return;
   }
@@ -83,19 +128,30 @@ const handleSaveCustomWeapon = async () => {
     return;
   }
 
+  const isEditing = !!editingCustomWeaponOriginalName;
+  const duplicate = (character.inventory ?? []).some((entry) => (
+    entry?.itemName === trimmedWeaponName && (!isEditing || entry.itemName !== editingCustomWeaponOriginalName)
+  ));
+  if (duplicate) {
+    Alert.alert('Duplicate Name', 'A weapon with that name already exists in inventory.');
+    return;
+  }
+
   const newEntry = {
-    itemName: weaponName.trim(),
+    itemName: trimmedWeaponName,
     quantity: 1,
     equipped: true, // Auto-equip so it immediately shows on OverviewScreen!
     attuned: weaponAttunement,
     charges: null,
     isCustomWeapon: true,
-    Name: weaponName.trim(),       
+    Name: trimmedWeaponName,
     ObjectType: 'Weapon',          
     Type: weaponType,
     damageDie: weaponDice,
     modifier: weaponModifier,
     BonusWeapon: parseInt(weaponBonusWeapon, 10),
+    AddProficiencyToDamage: !!weaponAddProficiencyToDamage,
+    addProficiencyToDamage: !!weaponAddProficiencyToDamage,
     Attunement: weaponAttunement ? 'Yes' : 'No',
     description: weaponDescription.trim(),
     Description: weaponDescription.trim(), 
@@ -108,8 +164,19 @@ const handleSaveCustomWeapon = async () => {
     // 1. Create a fresh clone of the character to force React to re-render
     const updatedCharacter = Object.assign(new Character(character), character);
     
-    // 2. Add the weapon to the new inventory array
-    updatedCharacter.inventory = [...(updatedCharacter.inventory ?? []), newEntry];
+    // 2. Add or update the weapon in inventory
+    updatedCharacter.inventory = isEditing
+      ? (updatedCharacter.inventory ?? []).map((entry) => {
+          if (entry.itemName !== editingCustomWeaponOriginalName) return entry;
+          return {
+            ...entry,
+            ...newEntry,
+            quantity: entry.quantity ?? 1,
+            equipped: entry.equipped ?? true,
+            charges: entry.charges ?? null,
+          };
+        })
+      : [...(updatedCharacter.inventory ?? []), newEntry];
     
     // 3. Save to device storage
     await saveCharacter(updatedCharacter);
@@ -135,18 +202,18 @@ const handleSaveCustomWeapon = async () => {
     Overview:  OverviewScreen,
     Skills:    SkillsScreen,
     Inventory: InventoryScreen,
-    Reference: ReferenceScreen,
     // Look closely here: we are using spellcasting.isSpellcaster!
     ...(classData?.spellcasting?.isSpellcaster ? { Magic: MagicScreen } : {}),
+    Reference: ReferenceScreen,
   };
 
   const TABS = [
     { key: 'Overview',  label: 'Overview',  icon: 'person-outline'    },
     { key: 'Skills',    label: 'Skills',    icon: 'list-outline'      },
     { key: 'Inventory', label: 'Inventory', icon: 'bag-outline'       },
-    { key: 'Reference', label: 'Reference', icon: 'book-outline'      },
     // And here!
     ...(classData?.spellcasting?.isSpellcaster ? [{ key: 'Magic', label: 'Magic', icon: 'sparkles-outline' }] : []),
+    { key: 'Reference', label: 'Reference', icon: 'book-outline'      },
   ];
 
   const tabKeys = TABS.map(tab => tab.key);
@@ -167,6 +234,17 @@ const handleSaveCustomWeapon = async () => {
   }, [activeTab, activeTabIndex, tabKeys]);
 
   React.useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (event) => {
+      if (activeTab === 'Overview') return;
+
+      event.preventDefault();
+      setActiveTabWithAnimation('Overview', -1);
+    });
+
+    return unsubscribe;
+  }, [activeTab, navigation, setActiveTabWithAnimation]);
+
+  React.useEffect(() => {
     const previousIndex = previousTabIndexRef.current;
     if (previousIndex === activeTabIndex) return;
 
@@ -175,7 +253,7 @@ const handleSaveCustomWeapon = async () => {
 
     Animated.timing(tabTransition, {
       toValue: 1,
-      duration: 140,
+      duration: 220,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
@@ -186,6 +264,18 @@ const handleSaveCustomWeapon = async () => {
   React.useEffect(() => {
     previousTabIndexRef.current = activeTabIndex;
   }, []);
+
+  React.useEffect(() => {
+    if (pendingMenuAction !== 'levelUp') return;
+    if (activeTab !== 'Overview' || !levelUpCallback) return;
+
+    const timer = setTimeout(() => {
+      levelUpCallback?.();
+      setPendingMenuAction(null);
+    }, 120);
+
+    return () => clearTimeout(timer);
+  }, [activeTab, levelUpCallback, pendingMenuAction]);
 
   const animatedScreenStyle = {
     opacity: tabTransition.interpolate({
@@ -245,7 +335,7 @@ const handleSaveCustomWeapon = async () => {
     <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
 
       <View style={sharedStyles.modalBox}>
-        <Text style={sharedStyles.modalTitle}>Create Custom Weapon</Text>
+        <Text style={sharedStyles.modalTitle}>{editingCustomWeaponOriginalName ? 'Edit Custom Weapon' : 'Create Custom Weapon'}</Text>
 
         {/* Weapon Name */}
         <Text style={styles.weaponLabel}>Weapon Name</Text>
@@ -361,6 +451,16 @@ const handleSaveCustomWeapon = async () => {
   />
 </View>
 
+<View style={styles.attunementRow}>
+  <Text style={styles.weaponLabel}>Add proficiency bonus to damage</Text>
+  <Switch
+    value={weaponAddProficiencyToDamage}
+    onValueChange={setWeaponAddProficiencyToDamage}
+    trackColor={{ false: colors.surfaceDeep, true: colors.accentDim }}
+    thumbColor={weaponAddProficiencyToDamage ? colors.accent : colors.textMuted}
+  />
+</View>
+
 
 
 
@@ -376,9 +476,9 @@ const handleSaveCustomWeapon = async () => {
         />
 
         <TouchableOpacity style={sharedStyles.primaryButton} onPress={handleSaveCustomWeapon}>
-          <Text style={sharedStyles.primaryButtonText}>Save to Inventory</Text>
+          <Text style={sharedStyles.primaryButtonText}>{editingCustomWeaponOriginalName ? 'Save Changes' : 'Save to Inventory'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setCreateWeaponVisible(false)} style={{ marginTop: spacing.md }}>
+        <TouchableOpacity onPress={resetAndClose} style={{ marginTop: spacing.md }}>
           <Text style={sharedStyles.cancelText}>Cancel</Text>
         </TouchableOpacity>
       </View>
@@ -435,7 +535,7 @@ const handleSaveCustomWeapon = async () => {
       <View style={styles.screenContainer} {...swipeResponder.panHandlers}>
         <Animated.View style={[styles.screenAnimated, animatedScreenStyle]}>
           <ActiveScreen
-            route={{ params: { character } }}
+            route={{ params: { ...(route?.params ?? {}), character } }}
             navigation={navigation}
             onCharacterChange={(updatedCharacter) => {
               const nextCharacter = updatedCharacter instanceof Character
@@ -466,7 +566,15 @@ const handleSaveCustomWeapon = async () => {
           <View style={styles.menuBox}>
   <TouchableOpacity
     style={styles.menuItem}
-    onPress={() => { setMenuVisible(false); setTimeout(() => levelUpCallback?.(), 300); }}
+    onPress={() => {
+      setMenuVisible(false);
+      if (activeTab === 'Overview') {
+        setTimeout(() => levelUpCallback?.(), 300);
+      } else {
+        setPendingMenuAction('levelUp');
+        setActiveTabWithAnimation('Overview', -1);
+      }
+    }}
   >
     <Ionicons name="arrow-up-circle" size={20} color={colors.gold} />
     <Text style={styles.menuItemText}>Level Up</Text>

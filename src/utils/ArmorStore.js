@@ -26,6 +26,7 @@ export function getArmorStatsByName(rawName) {
   
   // Strip common 5eTools material prefixes just in case
   name = name.replace(/^(mithral|adamantine)\s+/i, '');
+  name = name.replace(/\s+armor$/i, '');
 
   return ARMOR_DATA[name] ?? null;
 }

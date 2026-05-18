@@ -40,11 +40,12 @@ const SKILL_LABELS = {
   persuasion: 'Persuasion',
 };
 
-export default function ItemCard({ item, onClose, onAdd }) {
+export default function ItemCard({ item, onClose, onAdd, inventoryEntry, onEquip, onRemove }) {
   if (!item) return null;
 
   const saveSummary = renderTargetSummary(item.BonusSaves, item.BonusSaveValue, SAVE_LABELS);
   const skillSummary = renderTargetSummary(item.BonusSkills, item.BonusSkillValue, SKILL_LABELS);
+  const inInventory = !!inventoryEntry;
 
   return (
     <Modal visible={!!item} transparent animationType="slide">
@@ -75,9 +76,22 @@ export default function ItemCard({ item, onClose, onAdd }) {
             <Text style={styles.description}>{item.Description}</Text>
           </ScrollView>
 
-          <TouchableOpacity style={styles.addButton} onPress={() => onAdd(item)}>
-            <Text style={styles.addButtonText}>Add to Inventory</Text>
-          </TouchableOpacity>
+          {inInventory ? (
+            <View style={styles.actionRow}>
+              <TouchableOpacity style={[styles.actionButton, styles.removeButton]} onPress={onRemove}>
+                <Text style={styles.actionButtonText}>Remove</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.actionButton, styles.equipButton]} onPress={onEquip}>
+                <Text style={styles.actionButtonText}>
+                  {inventoryEntry.equipped ? 'Unequip' : 'Equip'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.addButton} onPress={() => onAdd(item)}>
+              <Text style={styles.addButtonText}>Add to Inventory</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={onClose}>
             <Text style={styles.closeText}>Close</Text>
           </TouchableOpacity>
@@ -120,5 +134,10 @@ const styles = StyleSheet.create({
   description: { color: '#ccc', fontSize: 13, lineHeight: 20, marginBottom: 16 },
   addButton: { backgroundColor: '#7fbbb3', borderRadius: 8, padding: 14, alignItems: 'center', marginBottom: 10 },
   addButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  actionRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  actionButton: { flex: 1, borderRadius: 6, padding: 9, alignItems: 'center' },
+  removeButton: { backgroundColor: '#a05252' },
+  equipButton: { backgroundColor: '#7fbbb3' },
+  actionButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
   closeText: { color: '#aaa', textAlign: 'center', paddingVertical: 8 },
 });

@@ -73,9 +73,13 @@ export default function SkillsScreen({ route }) {
     expertise: [...(character.proficiencies?.expertise ?? [])],
   });
   const [saveProfs, setSaveProfs] = useState([...(character.proficiencies?.saves ?? [])]);
+  const [saveOverrides, setSaveOverrides] = useState({ ...(character.overrides?.saveBonuses ?? {}) });
   const [modalVisible, setModalVisible] = useState(false);
   const editingSkillRef                 = useRef(null);
   const [abilityInput, setAbilityInput] = useState('');
+  const [saveOverrideVisible, setSaveOverrideVisible] = useState(false);
+  const [editingSaveKey, setEditingSaveKey] = useState(null);
+  const [saveOverrideInput, setSaveOverrideInput] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -85,6 +89,7 @@ export default function SkillsScreen({ route }) {
         expertise: [...(character.proficiencies?.expertise ?? [])],
       });
       setSaveProfs([...(character.proficiencies?.saves ?? [])]);
+      setSaveOverrides({ ...(character.overrides?.saveBonuses ?? {}) });
     }, [character])
   );
 
@@ -112,6 +117,14 @@ export default function SkillsScreen({ route }) {
   const getAbilityMod   = (abilityKey) => Math.floor((getAbilityScore(abilityKey) - 10) / 2);
 
   const getSaveBonus = (abilityKey) => {
+    const mod        = getAbilityMod(abilityKey);
+    const proficient = saveProfs.includes(abilityKey);
+    const itemBonus  = equippedBonuses.bonusSaves?.[abilityKey] ?? 0;
+    const overrideBonus = Number(saveOverrides?.[abilityKey]) || 0;
+    return mod + (proficient ? character.proficiencyBonus : 0) + itemBonus + overrideBonus;
+  };
+
+  const getSaveBaseBonus = (abilityKey) => {
     const mod        = getAbilityMod(abilityKey);
     const proficient = saveProfs.includes(abilityKey);
     const itemBonus  = equippedBonuses.bonusSaves?.[abilityKey] ?? 0;
@@ -198,11 +211,59 @@ export default function SkillsScreen({ route }) {
     await patchCharacter(character.id, { proficiencies: nextProficiencies });
   };
 
+  const openSaveOverrideEditor = (abilityKey) => {
+    setEditingSaveKey(abilityKey);
+    setSaveOverrideInput(String(getSaveBonus(abilityKey)));
+    setSaveOverrideVisible(true);
+  };
+
+  const applySaveOverride = async () => {
+    if (!editingSaveKey) return;
+    const targetTotal = parseInt(saveOverrideInput, 10);
+    if (Number.isNaN(targetTotal)) return;
+
+    const baseBonus = getSaveBaseBonus(editingSaveKey);
+    const nextDelta = targetTotal - baseBonus;
+    const nextSaveBonuses = { ...(character.overrides?.saveBonuses ?? {}) };
+
+    if (nextDelta === 0) {
+      delete nextSaveBonuses[editingSaveKey];
+    } else {
+      nextSaveBonuses[editingSaveKey] = nextDelta;
+    }
+
+    const nextOverrides = {
+      ...(character.overrides ?? {}),
+      saveBonuses: nextSaveBonuses,
+    };
+
+    character.overrides = nextOverrides;
+    setSaveOverrides(nextSaveBonuses);
+    await patchCharacter(character.id, { overrides: nextOverrides });
+    setSaveOverrideVisible(false);
+  };
+
+  const clearSaveOverride = async () => {
+    if (!editingSaveKey) return;
+    const nextSaveBonuses = { ...(character.overrides?.saveBonuses ?? {}) };
+    delete nextSaveBonuses[editingSaveKey];
+
+    const nextOverrides = {
+      ...(character.overrides ?? {}),
+      saveBonuses: nextSaveBonuses,
+    };
+
+    character.overrides = nextOverrides;
+    setSaveOverrides(nextSaveBonuses);
+    await patchCharacter(character.id, { overrides: nextOverrides });
+    setSaveOverrideVisible(false);
+  };
+
 
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={{ paddingBottom: spacing.xl }}
+      contentContainerStyle={styles.contentContainer}
     >
 
       {/* ABILITY SCORES */}
@@ -242,7 +303,7 @@ export default function SkillsScreen({ route }) {
 
       {/* SAVING THROWS */}
       <Text style={sharedStyles.sectionHeader}>
-        Saving Throws <Text style={styles.hintText}>(tap to toggle proficiency)</Text>
+        Saving Throws <Text style={styles.hintText}></Text>
       </Text>
       <View style={styles.saveRow}>
         {ABILITIES.map(({ key }) => {
@@ -257,6 +318,8 @@ export default function SkillsScreen({ route }) {
                 proficient && { borderColor: acColor, backgroundColor: `${acColor}22` },
               ]}
               onPress={() => toggleSaveProficiency(key)}
+              onLongPress={() => openSaveOverrideEditor(key)}
+              delayLongPress={400}
               activeOpacity={0.7}
             >
               <Text style={[styles.saveDot, { color: proficient ? acColor : colors.textDisabled }]}>
@@ -390,6 +453,42 @@ export default function SkillsScreen({ route }) {
         </View>
       </Modal>
 
+      <Modal visible={saveOverrideVisible} transparent animationType="slide">
+        <View style={sharedStyles.modalOverlay}>
+          <View style={sharedStyles.modalBox}>
+            <Text style={sharedStyles.modalTitle}>
+              {editingSaveKey ? `${editingSaveKey.toUpperCase()} Save` : 'Save'}
+            </Text>
+            <Text style={styles.modalSubtitle}>Set total saving throw bonus</Text>
+
+            <TextInput
+              style={[sharedStyles.input, styles.largeInput]}
+              keyboardType="numeric"
+              value={saveOverrideInput}
+              onChangeText={setSaveOverrideInput}
+              placeholder="0"
+              placeholderTextColor={colors.textDisabled}
+              autoFocus
+            />
+
+            <TouchableOpacity style={sharedStyles.primaryButton} onPress={applySaveOverride}>
+              <Text style={sharedStyles.primaryButtonText}>Apply Save Override</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[sharedStyles.primaryButton, { backgroundColor: colors.surfaceDeep, marginTop: spacing.sm }]}
+              onPress={clearSaveOverride}
+            >
+              <Text style={[sharedStyles.primaryButtonText, { color: colors.textMuted }]}>Reset to Calculated</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setSaveOverrideVisible(false)}>
+              <Text style={sharedStyles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
     </ScrollView>
   );
 }
@@ -397,12 +496,18 @@ export default function SkillsScreen({ route }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    direction: 'ltr',
     backgroundColor: colors.background,
     padding: spacing.md,
+  },
+  contentContainer: {
+    paddingBottom: spacing.xl,
+    alignItems: 'stretch',
   },
 
   // Ability grid
   abilityGrid: {
+    direction: 'ltr',
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
@@ -443,6 +548,7 @@ const styles = StyleSheet.create({
 
   // Saves
   saveRow: {
+    direction: 'ltr',
     flexDirection: 'row',
     gap: spacing.xs,
     marginBottom: spacing.sm,
@@ -484,6 +590,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   skillRow: {
+    direction: 'ltr',
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -509,6 +616,7 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     flex: 1,
     fontSize: 13,
+    textAlign: 'left',
   },
   abilityTag: {
     borderRadius: radius.sm,
@@ -554,6 +662,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   profToggleRow: {
+    direction: 'ltr',
     flexDirection: 'row',
     gap: spacing.sm,
     marginTop: spacing.md,

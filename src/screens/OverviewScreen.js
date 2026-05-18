@@ -4,13 +4,13 @@ import {
   StyleSheet, ScrollView, Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { patchCharacter, saveCharacter } from '../utils/CharacterStore';
+import { patchCharacter } from '../utils/CharacterStore';
 import { getItemByName } from '../utils/ItemStore';
 import { Character } from '../models/Character';
-import { initWeaponStore, getWeaponDamageByName } from '../utils/WeaponStore';
+import { getWeaponDamageByName } from '../utils/WeaponStore';
 import { getClassData } from '../data/classes'; 
 import { getFeats, getRaces } from '../utils/DataLoader';
-import { applyFeatEffects, FEAT_EFFECTS } from '../data/featEffects';
+import { applyFeatEffects } from '../data/featEffects';
 import { formatFeatSummary, meetsPrerequisites } from '../utils/featUtils';
 import {
   colors, spacing, radius, typography,
@@ -18,6 +18,18 @@ import {
 } from '../styles/theme';
 
 const DMG_DEBUG_TAG = '[WARLOCK_DMG_DEBUG]';
+const LESSONS_INVOCATION_ID = 'lessons_of_the_first_ones';
+
+function mergeLessonsInvocationFeats(existingFeats, lessonFeatNames, level) {
+  const baseFeats = (existingFeats ?? []).filter((feat) => !(feat?.grantedByInvocation === LESSONS_INVOCATION_ID));
+  const lessonFeats = (lessonFeatNames ?? []).map((name) => ({
+    name,
+    source: 'Invocation: Lessons of the First Ones',
+    takenAtLevel: level,
+    grantedByInvocation: LESSONS_INVOCATION_ID,
+  }));
+  return [...baseFeats, ...lessonFeats];
+}
 const STANDARD_DND_LANGUAGES = [
   'Common',
   'Dwarvish',
@@ -58,7 +70,7 @@ function BreakdownRow({ label, value, isTotal }) {
   );
 }
 
-export default function OverviewScreen({ route, onRegisterActions }) {
+export default function OverviewScreen({ route, navigation, onRegisterActions }) {
   const raw       = route.params.character;
   const character = raw instanceof Character ? raw : new Character(raw);
   const classData = getClassData(character.classId);
@@ -86,7 +98,6 @@ export default function OverviewScreen({ route, onRegisterActions }) {
   const [breakdownModalVisible, setBreakdownModalVisible] = useState(false);
   const [overrideModalVisible, setOverrideModalVisible]   = useState(false);
   const [overrideInput, setOverrideInput]                 = useState('');
-  const [weaponStoreReady, setWeaponStoreReady]           = useState(false);
   const [featDetail, setFeatDetail] = useState(null);
   const [featDetailVisible, setFeatDetailVisible] = useState(false);
   const [subclassFeatureDetail, setSubclassFeatureDetail] = useState(null);
@@ -109,6 +120,8 @@ export default function OverviewScreen({ route, onRegisterActions }) {
   const [featEditIndex, setFeatEditIndex] = useState(null);
   const [raceFeatureDetail, setRaceFeatureDetail] = useState(null);
   const [raceFeatureDetailVisible, setRaceFeatureDetailVisible] = useState(false);
+  const [classFeatureDetail, setClassFeatureDetail] = useState(null);
+  const [classFeatureDetailVisible, setClassFeatureDetailVisible] = useState(false);
 
   // (Keeping your ASI/Level up states here for brevity...)
   const [asiChoice, setAsiChoice]         = useState(null);   
@@ -136,16 +149,16 @@ export default function OverviewScreen({ route, onRegisterActions }) {
   // Notice we deleted isFighter, isBarbarian, ragesUsed, actionSurgeUsed, etc.!
 
   useEffect(() => {
-    initWeaponStore().then(() => setWeaponStoreReady(true));
-  }, []);
-
-  useEffect(() => {
     setSelectedLanguages(
       normalizeStringList(Array.isArray(character.languages) ? character.languages : [])
     );
   }, [character.id, JSON.stringify(character.languages ?? [])]);
 
-const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ?? []) : [];
+  useEffect(() => {
+    setManualTiles(Array.isArray(character.manualTiles) ? character.manualTiles : []);
+  }, [character.id, JSON.stringify(character.manualTiles ?? [])]);
+
+const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
 
   const normalizeSignedNumber = (value) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -175,6 +188,11 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     return '';
   };
 
+  const isWeaponTypeCode = (value) => {
+    const normalized = String(value ?? '').trim().toUpperCase();
+    return /^M(\||$)/.test(normalized) || /^R(\||$)/.test(normalized);
+  };
+
   const unlockedSubclassFeatures = useMemo(() => {
     const selectedSubclassId = character.subclassId?.toLowerCase();
     const currentLevel = parseInt(character.level, 10) || 1;
@@ -189,6 +207,29 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
       .filter((feature) => (feature?.level ?? 1) <= currentLevel)
       .sort((a, b) => (a.level ?? 1) - (b.level ?? 1));
   }, [classData, character.level, character.subclassId]);
+
+  const unlockedClassFeatures = useMemo(() => {
+    if (!classData?.levels) return [];
+    const currentLevel = parseInt(character.level, 10) || 1;
+    const seen = new Set();
+    const features = [];
+    for (let lvl = 1; lvl <= currentLevel; lvl++) {
+      const names = classData.levels[lvl]?.features ?? [];
+      for (const name of names) {
+        if (!seen.has(name)) {
+          seen.add(name);
+          const def = classData.featureDefinitions?.[name];
+          features.push({
+            name,
+            actionType: def?.actionType ?? null,
+            description: def?.description ?? null,
+            gainedAtLevel: lvl,
+          });
+        }
+      }
+    }
+    return features;
+  }, [classData, character.level]);
 
   const selectedRace = useMemo(() => {
     if (!character.race) return null;
@@ -220,18 +261,45 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
   
   const equippedAttacks = rawAttacks
     .filter(atk => {
-      // NEW THE BOUNCER: Ask the database if this is actually a weapon
       const staticItem = getItemByName(atk.name, character.customItems ?? []);
       const invItem = character.inventory?.find(i => i.itemName === atk.name && i.equipped);
-      return staticItem?.ObjectType === 'Weapon' || invItem?.ObjectType === 'Weapon';
+      const weaponLookupName = firstNonEmptyString(
+        atk.baseWeaponName,
+        atk.BaseWeaponName,
+        staticItem?.BaseItem?.split('|')[0],
+        invItem?.baseItem?.split('|')[0],
+        invItem?.baseWeaponName,
+        invItem?.BaseWeaponName,
+        atk.name,
+      );
+      const hasWeaponDamageProfile = !!getWeaponDamageByName(weaponLookupName);
+      const staticType = String(staticItem?.Type ?? '').toUpperCase();
+      const invType = String(invItem?.type ?? invItem?.Type ?? '').toUpperCase();
+      const staticWeaponLike = staticItem?.ObjectType === 'Weapon'
+        || isWeaponTypeCode(staticType)
+        || hasWeaponDamageProfile;
+      const inventoryWeaponLike = invItem?.objectType === 'Weapon'
+        || invItem?.ObjectType === 'Weapon'
+        || isWeaponTypeCode(invType);
+      return staticWeaponLike || inventoryWeaponLike;
     })
     .map(atk => {
-      const weaponLookupName = firstNonEmptyString(atk.baseWeaponName, atk.BaseWeaponName, atk.name);
-      const dmgInfo = getWeaponDamageByName(weaponLookupName);
+      const staticItem = getItemByName(atk.name, character.customItems ?? []);
       const invItem = character.inventory?.find(i => i.itemName === atk.name && i.equipped);
+      const weaponLookupName = firstNonEmptyString(
+        atk.baseWeaponName,
+        atk.BaseWeaponName,
+        staticItem?.BaseItem?.split('|')[0],
+        invItem?.baseItem?.split('|')[0],
+        invItem?.baseWeaponName,
+        invItem?.BaseWeaponName,
+        atk.name,
+      );
+      const dmgInfo = getWeaponDamageByName(weaponLookupName);
       const normalizedAttackBonus = normalizeSignedNumber(atk.attackBonus);
       const normalizedDamageBonus = normalizeSignedNumber(atk.damageBonus);
       const normalizedFinalDamageBonus = normalizeSignedNumber(atk.finalDamageBonus);
+      const normalizedProficiencyDamageBonus = normalizeSignedNumber(atk.proficiencyDamageBonus);
       const normalizedDamageDie = normalizeDamageDie(dmgInfo?.dice ?? atk.damageDie);
       const normalizedMagicAttackBonus = normalizeSignedNumber(atk.magicAttackBonus ?? atk.magicBonus);
       const normalizedMagicDamageBonus = normalizeSignedNumber(atk.magicDamageBonus ?? atk.magicBonus);
@@ -275,10 +343,16 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
         magicDamageBonus: normalizedMagicDamageBonus,
         appliedRageBonus: normalizedRageBonus,
         featDamageBonus: normalizedFeatBonus,
+        proficiencyDamageBonus: normalizedProficiencyDamageBonus,
         damageDie: normalizedDamageDie,
         damageType: dmgInfo ? dmgInfo.type : '',
         extraDamageDie: invItem?.extraDamageDie,
         extraDamageType: invItem?.extraDamageType,
+        canEditCustomWeapon: !!(
+          (staticItem?.custom && staticItem?.ObjectType === 'Weapon')
+          || invItem?.isCustomWeapon
+        ),
+        editTargetType: invItem?.isCustomWeapon ? 'inventory-entry' : 'custom-item',
       };
     });
 
@@ -296,7 +370,23 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
 
   const persist = async (updates) => {
     Object.assign(character, updates);
-    await saveCharacter(character);
+    const mergedCharacter = await patchCharacter(character.id, updates);
+    Object.assign(character, mergedCharacter.toJSON());
+  };
+
+  const getResourceStatePatch = () => {
+    const nextPatch = {
+      activeToggles: { ...(character.activeToggles ?? {}) },
+    };
+
+    (character.getAllActiveResources?.() ?? []).forEach((resource) => {
+      const usedProp = `${resource.id}Used`;
+      if (character[usedProp] !== undefined) {
+        nextPatch[usedProp] = character[usedProp];
+      }
+    });
+
+    return nextPatch;
   };
 
   const persistManualTiles = (nextTiles) => {
@@ -466,6 +556,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     if (isNaN(val) || val <= 0) return;
     let newHp   = hpCurrent;
     let newTemp = hpTemp;
+    let newHpMax = character.hpMax;
     if (mode === 'damage') {
       if (newTemp > 0) {
         const absorbed  = Math.min(newTemp, val);
@@ -478,9 +569,15 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     }
     if (mode === 'healing') newHp   = Math.min(character.hpMax, hpCurrent + val);
     if (mode === 'temp')    newTemp = val;
+    if (mode === 'max') {
+      newHpMax = val;
+      newHp = Math.min(newHp, newHpMax);
+      character.hpMax = newHpMax;
+    }
     setHpCurrent(newHp);
     setHpTemp(newTemp);
-    persist({ hpCurrent: newHp, hpTemp: newTemp });
+    persist({ hpCurrent: newHp, hpTemp: newTemp, hpMax: newHpMax });
+    if (mode === 'max') setRefreshTrigger(prev => prev + 1);
     setHpModalVisible(false);
     setHpInput('');
   };
@@ -503,7 +600,10 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     setLastRollResult({ rolls, conMod, total, newHp: character.hpCurrent });
     
     // 2. Save and refresh UI
-    persist(character.toJSON());
+    persist({
+      hpCurrent: character.hpCurrent,
+      hitDiceRemaining: character.hitDiceRemaining,
+    });
     setRefreshTrigger(prev => prev + 1);
   };
 
@@ -526,7 +626,13 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     const nextManualTiles = applyManualTileRecharge('short', manualTiles);
     character.manualTiles = nextManualTiles;
     setManualTiles(nextManualTiles);
-    persist(character.toJSON());
+    persist({
+      hpCurrent: character.hpCurrent,
+      hpTemp: character.hpTemp,
+      hitDiceRemaining: character.hitDiceRemaining,
+      manualTiles: nextManualTiles,
+      ...getResourceStatePatch(),
+    });
     setRefreshTrigger(prev => prev + 1); // Refresh the UI
     
     setRestModalVisible(false);
@@ -544,7 +650,13 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     setHpTemp(character.hpTemp);
     setHitDiceRemaining(character.hitDiceRemaining);
     
-    persist(character.toJSON());
+    persist({
+      hpCurrent: character.hpCurrent,
+      hpTemp: character.hpTemp,
+      hitDiceRemaining: character.hitDiceRemaining,
+      manualTiles: nextManualTiles,
+      ...getResourceStatePatch(),
+    });
     setRefreshTrigger(prev => prev + 1); // Refresh the UI
     
     setRestModalVisible(false);
@@ -777,7 +889,8 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
       const applied = applyFeatEffects(
         { ...character, abilities: updatedAbilities, proficiencies: updatedProficiencies },
         selectedFeat.name,
-        featChoices
+        featChoices,
+        selectedFeat
       );
       updatedAbilities     = applied.abilities;
       updatedProficiencies = applied.proficiencies;
@@ -814,7 +927,17 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
   setHpCurrent(newHpCurrent);
   setHitDiceRemaining(newDiceRemaining);
   setCharacterLevel(newLevel);
-    await persist(character.toJSON());
+    await persist({
+      level: newLevel,
+      hpMax: character.hpMax,
+      hpCurrent: newHpCurrent,
+      hitDiceRemaining: newDiceRemaining,
+      proficiencyBonus: newProfBonus,
+      abilities: updatedAbilities,
+      feats: updatedFeats,
+      proficiencies: updatedProficiencies,
+      levelSnapshots: nextSnapshots,
+    });
     setRefreshTrigger(prev => prev + 1);
 
     const isWarlockInvocationGain = character.classId === 'warlock' && gainedInvocations > 0;
@@ -829,9 +952,16 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
     if (isWarlockInvocationGain) {
       navigation.navigate('InvocationPicker', {
         character,
-        onSave: async (list) => {
+        onSave: async (list, lessonFeatNames = []) => {
+          const nextFeats = mergeLessonsInvocationFeats(
+            character.feats ?? [],
+            lessonFeatNames,
+            parseInt(character.level, 10) || 1
+          );
+
           character.knownInvocations = list;
-          await patchCharacter(character.id, { knownInvocations: list });
+          character.feats = nextFeats;
+          await patchCharacter(character.id, { knownInvocations: list, feats: nextFeats });
           setRefreshTrigger(prev => prev + 1);
         }
       });
@@ -965,8 +1095,8 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
         </View>
 
         {/* 5. THE NEW DYNAMIC STATS GRID */}
-        <View style={styles.grid}>
-          {[
+        {(() => {
+          const statTiles = [
             // Standard generic stats (AC, Initiative, Prof, Speed, Perception, Inspiration)
             { label: 'AC', value: character.getArmorClass(), color: colors.accentSoft, onLongPress: () => { breakdownRef.current = character.getACBreakdown(); setBreakdownModalVisible(true); }},
             { label: 'Initiative', value: `+${character.getInitiativeBonus()}`, color: colors.accentSoft },
@@ -994,61 +1124,72 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
               const max = getMaxUses(res);
               const isActive = character.activeToggles?.[res.id] || false;
 
-              // Format the text shown inside the button
+              if (max === 0 && !isActive) return null;
+
               let displayValue = '';
               if (isToggle) {
-                displayValue = isActive ? 'ACTIVE' : (max === 999 ? '∞ uses' : `${Math.max(0, max - currentUsed)}/${max}`);
+                displayValue = isActive ? 'RAGING' : (max === 999 ? '∞ uses' : `${Math.max(0, max - currentUsed)}/${max}`);
               } else {
                 displayValue = max === 999 ? '∞' : `${currentUsed}/${max}`;
               }
 
               return {
-                label: (isToggle && isActive) ? null : res.name, // Hide label when raging for big text
+                label: (isToggle && isActive) ? null : res.name,
                 value: displayValue,
                 color: isActive ? '#ff3333' : colors.accentSoft,
-                valueStyle: isActive ? { fontSize: 22, fontWeight: '900', letterSpacing: 1 } : {},
+                valueStyle: isActive ? { fontSize: 16, fontWeight: '900', letterSpacing: 1 } : {},
                 onPress: () => {
-                  if (max === 0) return; // Not high enough level yet
+                  if (max === 0) return;
 
                   if (isToggle) {
                     if (isActive) {
-                      // Turn it off
                       character.activeToggles[res.id] = false;
                     } else {
-                      // Try to turn it on
                       if (currentUsed >= max && max !== 999) return;
                       character[usedProp] = max === 999 ? 0 : currentUsed + 1;
                       character.activeToggles[res.id] = true;
                     }
                   } else {
-                    // Standard Uses (e.g. Action Surge)
                     if (currentUsed >= max && max !== 999) return;
                     character[usedProp] = currentUsed + 1;
                   }
 
-                  // Save the character and force UI refresh
-                  persist(character.toJSON());
+                  persist({
+                    [usedProp]: character[usedProp],
+                    activeToggles: { ...(character.activeToggles ?? {}) },
+                  });
                   setRefreshTrigger(prev => prev + 1);
                 }
               };
             })
+          ].filter(Boolean);
 
-          ].map((stat, index) => (
-            <TouchableOpacity
-              key={stat.label || `stat-${index}`}
-              style={styles.gridCell}
-              onPress={stat.onPress}
-              onLongPress={stat.onLongPress}
-              delayLongPress={400}
-              activeOpacity={stat.onPress || stat.onLongPress ? 0.7 : 1}
-            >
-              <Text style={[styles.gridValue, { color: stat.color }, stat.valueStyle]}>
-                {stat.value}
-              </Text>
-              {stat.label ? <Text style={styles.gridLabel}>{stat.label}</Text> : null}
-            </TouchableOpacity>
-          ))}
-        </View>
+          const remainder = statTiles.length % 4;
+          const spacerCount = remainder === 0 ? 0 : 4 - remainder;
+
+          return (
+            <View style={styles.grid}>
+              {statTiles.map((stat, index) => (
+                <TouchableOpacity
+                  key={stat.label || `stat-${index}`}
+                  style={styles.gridCell}
+                  onPress={stat.onPress}
+                  onLongPress={stat.onLongPress}
+                  delayLongPress={400}
+                  activeOpacity={stat.onPress || stat.onLongPress ? 0.7 : 1}
+                >
+                  <Text style={[styles.gridValue, { color: stat.color }, stat.valueStyle]}>
+                    {stat.value}
+                  </Text>
+                  {stat.label ? <Text style={styles.gridLabel}>{stat.label}</Text> : null}
+                </TouchableOpacity>
+              ))}
+              {Array.from({ length: spacerCount }, (_, i) => (
+                <View key={`grid-spacer-${i}`} style={{ width: '24%' }} />
+              ))}
+            </View>
+          );
+        })()}
 
         {/* ... Rest of your UI below (Attacks, Feats, Modals) remains exactly the same ... */}
 
@@ -1122,7 +1263,11 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                 damageBonus:      atk.damageBonus, 
                 appliedRageBonus: atk.appliedRageBonus,
                 featDamageBonus:  atk.featDamageBonus,
+                proficiencyDamageBonus: atk.proficiencyDamageBonus,
                 finalDamageBonus: atk.finalDamageBonus,
+                canEditCustomWeapon: atk.canEditCustomWeapon,
+                sourceItemName: atk.name,
+                editTargetType: atk.editTargetType,
               };
               setBreakdownModalVisible(true);
             }}
@@ -1130,8 +1275,17 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
             activeOpacity={0.7}
           >
             <View style={styles.attackNameCol}>
-              <Text style={styles.attackName}>{atk.name}</Text>
-              <Text style={styles.attackTag}>Weapon · hold for breakdown</Text>
+              <View style={styles.attackNameHeader}>
+                <Text style={styles.attackName}>{atk.name}</Text>
+                {atk.canEditCustomWeapon ? (
+                  <View style={styles.attackEditBadge}>
+                    <Text style={styles.attackEditBadgeText}>EDIT</Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={styles.attackTag}>
+                {atk.canEditCustomWeapon ? 'Custom weapon · hold for breakdown' : 'Weapon · hold for breakdown'}
+              </Text>
             </View>
             <View style={styles.attackStatCol}>
               <Text style={styles.attackStatLabel}>ATK</Text>
@@ -1159,12 +1313,15 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
 
        {/* ACTIVE FEATS */}
 {(character.feats?.length ?? 0) > 0 && (
-  <View style={{ marginTop: spacing.lg }}>
+  <View style={{ marginTop: spacing.sm }}>
     <Text style={sharedStyles.sectionHeader}>FEATS</Text>
     {character.feats.map((feat, i) => {
       const featName = getFeatName(feat);
       if (!featName) return null;
       const full = FEATS_BY_NAME[featName];
+      const invocationSourceLabel = feat?.grantedByInvocation === LESSONS_INVOCATION_ID
+        ? 'From Lessons of the First Ones'
+        : (feat?.grantedByInvocation ? 'From Invocation' : null);
       return (
               
         <TouchableOpacity
@@ -1179,10 +1336,8 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
         >
           <View style={{ flex: 1 }}>
             <Text style={styles.featChipName}>{featName}</Text>
-            {full && (
-              <Text style={styles.featChipMeta} numberOfLines={1}>
-                {formatFeatSummary(full)}
-              </Text>
+            {invocationSourceLabel && (
+              <Text style={styles.featChipMeta}>{invocationSourceLabel}</Text>
             )}
           </View>
           <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
@@ -1210,11 +1365,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
       >
         <View style={{ flex: 1 }}>
           <Text style={styles.featChipName}>{feature.name}</Text>
-          {!!selectedRace?.name && (
-            <Text style={styles.featChipMeta} numberOfLines={1}>
-              {selectedRace.name}{selectedRace.source ? ` · ${selectedRace.source}` : ''}
-            </Text>
-          )}
+          
         </View>
         <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
       </TouchableOpacity>
@@ -1258,6 +1409,33 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
               })
             )}
           </>
+        )}
+
+        {/* CLASS FEATURES */}
+        {unlockedClassFeatures.length > 0 && (
+          <View style={{ marginTop: spacing.sm }}>
+            <Text style={sharedStyles.sectionHeader}>Class Features</Text>
+            {unlockedClassFeatures.map((feature, i) => (
+              <TouchableOpacity
+                key={`class-feature-${feature.name}-${i}`}
+                style={styles.featChip}
+                delayLongPress={400}
+                activeOpacity={0.7}
+                onLongPress={() => {
+                  setClassFeatureDetail(feature);
+                  setClassFeatureDetailVisible(true);
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.featChipName}>{feature.name}</Text>
+                  {feature.actionType ? (
+                    <Text style={styles.featChipMeta}>{feature.actionType}</Text>
+                  ) : null}
+                </View>
+                <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            ))}
+          </View>
         )}
 
         {/* SUBCLASS FEATURES */}
@@ -1357,6 +1535,10 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                 </TouchableOpacity>
               ))}
             </View>
+            <TouchableOpacity style={styles.maxHpLink} onPress={() => applyHp('max')}>
+              <Ionicons name="create-outline" size={16} color={colors.accentSoft} />
+              <Text style={styles.maxHpLinkText}>Set Max HP</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => { setHpModalVisible(false); setHpInput(''); }}>
               <Text style={sharedStyles.cancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -1404,7 +1586,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
             <View style={styles.stepper}>
               <TouchableOpacity
                 style={styles.stepperBtn}
-                onPress={() => setDiceToSpend(Math.min(character.hitDiceRemaining, diceToSpend + 1))}
+                onPress={() => setDiceToSpend(Math.max(1, diceToSpend - 1))}
               >
                 <Text style={styles.stepperBtnText}>−</Text>
               </TouchableOpacity>
@@ -1683,6 +1865,44 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
   </View>
 </Modal>
 
+<Modal
+  visible={classFeatureDetailVisible}
+  transparent
+  animationType="fade"
+  onRequestClose={() => setClassFeatureDetailVisible(false)}
+>
+  <View style={sharedStyles.modalOverlay}>
+    <View style={sharedStyles.modalBox}>
+      <Text style={sharedStyles.modalTitle}>
+        {classFeatureDetail?.name ?? 'Class Feature'}
+      </Text>
+
+      {!!classFeatureDetail && (
+        <>
+          {classFeatureDetail.actionType ? (
+            <Text style={styles.featDetailMeta}>
+              {classFeatureDetail.actionType}
+              {classFeatureDetail.gainedAtLevel ? ` · Level ${classFeatureDetail.gainedAtLevel}` : ''}
+            </Text>
+          ) : null}
+          <ScrollView style={{ maxHeight: 260, marginTop: spacing.sm }}>
+            <Text style={styles.featDetailText}>
+              {classFeatureDetail.description ?? 'No description available.'}
+            </Text>
+          </ScrollView>
+        </>
+      )}
+
+      <TouchableOpacity
+        onPress={() => setClassFeatureDetailVisible(false)}
+        style={{ marginTop: spacing.md }}
+      >
+        <Text style={sharedStyles.cancelText}>Close</Text>
+      </TouchableOpacity>
+    </View>
+  </View>
+</Modal>
+
       <Modal visible={manualTileModalVisible} transparent animationType="slide">
         <View style={sharedStyles.modalOverlay}>
           <View style={sharedStyles.modalBox}>
@@ -1935,8 +2155,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                     {getFeats()
                       .filter(f => {
                         try {
-                          return f.source === 'XPHB' &&
-                                 f.category !== 'O' &&
+                          return f.category !== 'O' &&
                                  f.category !== 'EB' &&
                                  meetsPrerequisites(f, character, newLevel) &&
                                  !(character.feats ?? []).some(cf => cf.name === f.name);
@@ -1952,7 +2171,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                             key={feat.name}
                             style={[styles.featRow, isSelected && styles.featRowSelected]}
                             onPress={() => {
-                              const effect = FEAT_EFFECTS[feat.name];
+                              const effect = feat;
                               if (effect?.abilityBonus?.type === 'choice') {
                                 setPendingFeat(feat);
                                 setFeatModalVisible(true);
@@ -1985,13 +2204,14 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                 isASILevel && !asiChoice && { opacity: 0.4 },
                 isASILevel && asiChoice === 'asi' && asiStats.length === 0 && { opacity: 0.4 },
                 isASILevel && asiChoice === 'feat' && !selectedFeat && { opacity: 0.4 },
+                isASILevel && asiChoice === 'feat' && selectedFeat?.abilityBonus?.type === 'choice' && !featChoices.abilityStat && { opacity: 0.4 },
               ]}
               onPress={doLevelUp}
               disabled={
                 isASILevel && (
                   !asiChoice ||
                   (asiChoice === 'asi' && asiStats.length === 0) ||
-                  (asiChoice === 'feat' && !selectedFeat)
+                  (asiChoice === 'feat' && (!selectedFeat || (selectedFeat?.abilityBonus?.type === 'choice' && !featChoices.abilityStat)))
                 )
               }
             >
@@ -2023,7 +2243,7 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
       <Text style={sharedStyles.modalTitle}>{pendingFeat?.name}</Text>
       <Text style={styles.modalSub}>Choose one ability score to increase by 1:</Text>
       <View style={styles.asiStatGrid}>
-        {FEAT_EFFECTS[pendingFeat?.name]?.abilityBonus?.from?.map(stat => {
+        {pendingFeat?.abilityBonus?.from?.map(stat => {
           const isChosen = featChoices.abilityStat === stat;
           return (
             <TouchableOpacity
@@ -2105,6 +2325,10 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                   )}
                   {breakdownRef.current.featDamageBonus > 0 &&
                   <BreakdownRow label="Feat Bonus"      value={`+${breakdownRef.current.featDamageBonus}`} />}
+                  <BreakdownRow
+                    label="Proficiency Damage Bonus"
+                    value={formatSignedNumber(breakdownRef.current.proficiencyDamageBonus ?? 0)}
+                  />
                   
                   <BreakdownRow
                     label="Total Damage"
@@ -2112,6 +2336,30 @@ const rawAttacks = weaponStoreReady ? (character.getEquippedWeaponAttacks?.() ??
                     isTotal
                   />
                 </View>
+                {!!breakdownRef.current.canEditCustomWeapon && (
+                  <TouchableOpacity
+                    style={styles.breakdownLink}
+                    onPress={() => {
+                      const weaponName = breakdownRef.current?.sourceItemName ?? breakdownRef.current?.name;
+                      if (!weaponName) return;
+                      setBreakdownModalVisible(false);
+                      if (breakdownRef.current?.editTargetType === 'inventory-entry') {
+                        navigation?.setParams?.({
+                          editInventoryCustomWeaponName: weaponName,
+                          editInventoryCustomWeaponRequestId: Date.now(),
+                        });
+                      } else {
+                        navigation?.setParams?.({
+                          activeTab: 'Inventory',
+                          editCustomWeaponName: weaponName,
+                          editCustomWeaponRequestId: Date.now(),
+                        });
+                      }
+                    }}
+                  >
+                    <Text style={styles.breakdownLinkText}>Edit this custom weapon</Text>
+                  </TouchableOpacity>
+                )}
               </>
             ) : (
               <>
@@ -2390,10 +2638,29 @@ topRow: {
     borderLeftColor: colors.accentSoft,
   },
   attackNameCol: { flex: 2 },
+  attackNameHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
   attackName: {
     color: colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 14,
+  },
+  attackEditBadge: {
+    backgroundColor: colors.surfaceDeep,
+    borderColor: colors.accentSoft,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+  },
+  attackEditBadgeText: {
+    color: colors.accentSoft,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   attackTag: {
     color: colors.textMuted,
@@ -2529,6 +2796,17 @@ topRow: {
     backgroundColor: colors.surfaceAlt,
     marginVertical: spacing.sm,
   },
+  breakdownLink: {
+    alignSelf: 'center',
+    marginTop: spacing.md,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+  },
+  breakdownLinkText: {
+    color: colors.accentSoft,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   overrideHint: {
     color: colors.textDisabled,
     fontSize: 9,
@@ -2604,6 +2882,18 @@ topRow: {
     color: colors.textPrimary,
     fontSize: 12,
     fontWeight: 'bold',
+  },
+  maxHpLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  maxHpLinkText: {
+    color: colors.accentSoft,
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   // Rest modal
@@ -2783,7 +3073,7 @@ featRowSelected: {
   backgroundColor: colors.surfaceDeep,
 },
 featName: {
-  fontSize: 14,
+  fontSize: 13,
   fontWeight: '600',
   color: colors.textPrimary,
 },
@@ -2805,7 +3095,7 @@ featChip: {
   // ...shadows.card,
 },
 featChipName: {
-  fontSize: 14,
+  fontSize: 13,
   fontWeight: '600',
   color: colors.textPrimary,
 },

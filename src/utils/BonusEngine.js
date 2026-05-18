@@ -1,5 +1,27 @@
 import { getItemByName } from './ItemStore';
 
+const ALL_SAVE_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+
+function hasExplicitMappedBonuses(item, mappedValuesKey, mappedKeysKey) {
+  const mappedValues = item?.[mappedValuesKey];
+  const mappedKeys = item?.[mappedKeysKey];
+
+  const hasMappedObject = mappedValues && typeof mappedValues === 'object' && !Array.isArray(mappedValues)
+    && Object.keys(mappedValues).length > 0;
+  const hasMappedKeys = Array.isArray(mappedKeys) && mappedKeys.length > 0;
+
+  return hasMappedObject || hasMappedKeys;
+}
+
+function getFallbackSaveBonusValues(item) {
+  if (!item || item.Name !== 'Cloak of Protection') return null;
+
+  const hasExplicitSaveBonuses = hasExplicitMappedBonuses(item, 'BonusSaveValues', 'BonusSaves');
+  if (hasExplicitSaveBonuses) return null;
+
+  return Object.fromEntries(ALL_SAVE_KEYS.map((key) => [key, 1]));
+}
+
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -44,6 +66,10 @@ export function getEquippedBonuses(inventoryEntries, customItems = []) {
     applyMappedBonusObject(bonusSkills, item.BonusSkillValues);
     applyMappedBonus(bonusSaves, item.BonusSaves, item.BonusSaveValue);
     applyMappedBonus(bonusSkills, item.BonusSkills, item.BonusSkillValue);
+
+    const fallbackSaveBonusValues = getFallbackSaveBonusValues(item);
+    applyMappedBonusObject(bonusSaves, fallbackSaveBonusValues);
+
     if (item.Attunement === 'Yes') attunedCount++;
   }
 

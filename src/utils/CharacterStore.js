@@ -4,8 +4,62 @@ import { Character } from '../models/Character';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
+import { Platform } from 'react-native';
 
 const STORAGE_KEY = 'cs_characters_v1';
+const EXPORT_DIRECTORY_URI_KEY = 'cs_export_directory_uri_v1';
+
+function sanitizeFilePart(value, fallback = 'character') {
+  const normalized = String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function buildExportFileName(character) {
+  const charName = sanitizeFilePart(character?.name, 'character');
+  const classId = sanitizeFilePart(character?.classId ?? character?.className, 'class');
+  const level = Number.parseInt(character?.level, 10) || 1;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${charName}_${classId}_lvl${level}_${timestamp}.json`;
+}
+
+async function getSavedExportDirectoryUri() {
+  try {
+    return await AsyncStorage.getItem(EXPORT_DIRECTORY_URI_KEY);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function setSavedExportDirectoryUri(directoryUri) {
+  try {
+    if (!directoryUri) {
+      await AsyncStorage.removeItem(EXPORT_DIRECTORY_URI_KEY);
+      return;
+    }
+    await AsyncStorage.setItem(EXPORT_DIRECTORY_URI_KEY, directoryUri);
+  } catch (err) {
+    // no-op
+  }
+}
+
+async function writeExportJsonToAndroidDirectory(directoryUri, fileName, json) {
+  const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+    directoryUri,
+    fileName,
+    'application/json'
+  );
+
+  await FileSystem.writeAsStringAsync(fileUri, json, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
+
+  return fileUri;
+}
 
 let writeQueue = Promise.resolve();
 
@@ -20,7 +74,23 @@ export async function loadCharacters() {
     const json = await AsyncStorage.getItem(STORAGE_KEY);
     if (!json) return [];
     const raw = JSON.parse(json);
-    return raw.map(data => new Character(data));
+    const characters = raw.map(data => new Character(data));
+
+    const hasInvocationMigration = raw.some((entry, index) => {
+      const previous = Array.isArray(entry?.knownInvocations) ? entry.knownInvocations : [];
+      const migrated = Array.isArray(characters[index]?.knownInvocations)
+        ? characters[index].knownInvocations
+        : [];
+
+      if (previous.length !== migrated.length) return true;
+      return previous.some((value, valueIndex) => value !== migrated[valueIndex]);
+    });
+
+    if (hasInvocationMigration) {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(characters));
+    }
+
+    return characters;
   } catch (err) {
     return [];
   }
@@ -104,7 +174,29 @@ export async function patchCharacter(id, updates = {}) {
 export async function exportCharacter(character) {
   try {
     const json = JSON.stringify(character, null, 2);
-    const fileUri = FileSystem.documentDirectory + 'character_backup.json';
+
+    const fileName = buildExportFileName(character);
+
+    if (Platform.OS === 'android') {
+      const savedDirectoryUri = await getSavedExportDirectoryUri();
+      if (savedDirectoryUri) {
+        try {
+          await writeExportJsonToAndroidDirectory(savedDirectoryUri, fileName, json);
+          return;
+        } catch (savedDirError) {
+          await setSavedExportDirectoryUri(null);
+        }
+      }
+
+      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted) return;
+
+      await writeExportJsonToAndroidDirectory(permissions.directoryUri, fileName, json);
+      await setSavedExportDirectoryUri(permissions.directoryUri);
+      return;
+    }
+
+    const fileUri = `${FileSystem.documentDirectory}${fileName}`;
     await FileSystem.writeAsStringAsync(fileUri, json);
     await Sharing.shareAsync(fileUri);
   } catch (err) {

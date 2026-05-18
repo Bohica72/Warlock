@@ -4,6 +4,7 @@ import { getWeaponDamageByName } from '../utils/WeaponStore';
 import { getClassData } from '../data/classes';
 import { getArmorStatsByName } from '../utils/ArmorStore';
 import { getSpellByName } from '../utils/DataLoader';
+import { invocations as INVOCATIONS_2024 } from '../data/invocations';
 
 
 const HEAVY_WEAPONS = new Set([
@@ -17,11 +18,54 @@ const HEAVY_WEAPONS = new Set([
   'Heavy Crossbow',
 ]);
 
+const INVOCATION_ID_SET = new Set(INVOCATIONS_2024.map((invocation) => invocation.id));
+const REPEATABLE_INVOCATION_IDS = new Set(['lessons_of_the_first_ones']);
+
+const normalizeInvocationKey = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/\s+/g, '_');
+
+const INVOCATION_LOOKUP = new Map(
+  INVOCATIONS_2024.flatMap((invocation) => ([
+    [normalizeInvocationKey(invocation.id), invocation.id],
+    [normalizeInvocationKey(invocation.name), invocation.id],
+  ]))
+);
+
+function normalizeKnownInvocations(values = []) {
+  if (!Array.isArray(values)) return [];
+
+  const normalized = [];
+  values.forEach((value) => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    const resolvedId = INVOCATION_ID_SET.has(trimmed)
+      ? trimmed
+      : INVOCATION_LOOKUP.get(normalizeInvocationKey(trimmed));
+
+    if (!resolvedId) return;
+    if (!REPEATABLE_INVOCATION_IDS.has(resolvedId) && normalized.includes(resolvedId)) return;
+    normalized.push(resolvedId);
+  });
+
+  return normalized;
+}
+
 function firstNonEmptyString(...values) {
   for (const value of values) {
     if (typeof value === 'string' && value.trim().length > 0) return value.trim();
   }
   return '';
+}
+
+function isWeaponTypeCode(typeValue) {
+  const normalized = String(typeValue ?? '').trim().toUpperCase();
+  return /^M(\||$)/.test(normalized) || /^R(\||$)/.test(normalized);
 }
 
 
@@ -42,7 +86,7 @@ export class Character {
     this.classSource = data.classSource ?? null;
     this.knownCantrips = data.knownCantrips ?? [];
     this.feats       = data.feats ?? [];
-    this.knownInvocations = data.knownInvocations ?? [];
+    this.knownInvocations = normalizeKnownInvocations(data.knownInvocations);
 
     if (data.abilities) {
       this.abilities = data.abilities;
@@ -238,6 +282,8 @@ getPopulatedSpells() {
     const classData = getClassData(this.classId);
     if (!classData) return null;
 
+    const supportCombatBonuses = this.getSupportCombatBonuses();
+
     const damageDie = classData.levels?.[this.level]?.fisticuffs
       ?? classData.unarmedDie
       ?? '1d4';
@@ -246,10 +292,12 @@ getPopulatedSpells() {
       name:         classData.unarmedAttackName ?? 'Unarmed Strike',
       tag:          classData.unarmedAttackTag  ?? 'Unarmed',
       damageDie,
-      damageBonus:  this.getAbilityMod('str'),
-      attackBonus:  this.getMeleeAttackBonus(),
+      damageBonus:  this.getAbilityMod('str') + supportCombatBonuses.damageBonus,
+      attackBonus:  this.getMeleeAttackBonus() + supportCombatBonuses.attackBonus,
       isProficient: true,
-      magicBonus:   0,
+      magicBonus:   supportCombatBonuses.attackBonus,
+      magicAttackBonus: supportCombatBonuses.attackBonus,
+      magicDamageBonus: supportCombatBonuses.damageBonus,
       strMod:       this.getAbilityMod('str'),
       profBonus:    this.proficiencyBonus,
     };
@@ -307,12 +355,57 @@ getPopulatedSpells() {
     return 'str';
   }
 
+  getSupportCombatBonuses() {
+    const equipped = (this.inventory ?? []).filter((entry) => entry.equipped);
+    const toNumber = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    let attackBonus = 0;
+    let damageBonus = 0;
+
+    equipped.forEach((entry) => {
+      const item = getItemByName(entry.itemName, this.customItems ?? []) ?? {};
+      const weaponLookupName = firstNonEmptyString(
+        item.BaseItem?.split('|')[0],
+        item.BaseWeaponName,
+        entry.baseWeaponName,
+        entry.BaseWeaponName,
+        entry.itemName,
+      );
+      const typeValue = String(item.Type ?? entry.Type ?? entry.type ?? '').toUpperCase();
+      const objectTypeValue = String(item.ObjectType ?? entry.objectType ?? entry.ObjectType ?? '').toLowerCase();
+      const isWeaponLike = objectTypeValue === 'weapon'
+        || isWeaponTypeCode(typeValue)
+        || !!getWeaponDamageByName(weaponLookupName);
+
+      if (isWeaponLike) return;
+
+      const itemAttackBonus = toNumber(item.BonusWeapon ?? entry.BonusWeapon ?? entry.bonusWeapon ?? 0);
+      const itemDamageBonus = toNumber((
+        item.BonusDamage
+        ?? entry.BonusDamage
+        ?? entry.bonusDamage
+        ?? item.BonusWeapon
+        ?? entry.BonusWeapon
+        ?? entry.bonusWeapon
+      ) ?? 0);
+
+      attackBonus += itemAttackBonus;
+      damageBonus += itemDamageBonus;
+    });
+
+    return { attackBonus, damageBonus };
+  }
+
   // ─── Saves & skills ──────────────────────────────────────────────────────────
   getSaveBonus(ability) {
     const mod        = this.getAbilityMod(ability);
     const proficient = this.proficiencies?.saves?.includes(ability);
     const itemBonus  = this.getEquippedBonuses()?.bonusSaves?.[ability] || 0;
-    return mod + (proficient ? this.proficiencyBonus : 0) + itemBonus;
+    const overrideBonus = Number(this.overrides?.saveBonuses?.[ability]) || 0;
+    return mod + (proficient ? this.proficiencyBonus : 0) + itemBonus + overrideBonus;
   }
 
   getSkillBonus(skill) {
@@ -386,7 +479,13 @@ getPopulatedSpells() {
 
     for (const entry of equipped) {
       const itemData = getItemByName(entry.itemName, this.customItems ?? []);
-      const armorLookupName = itemData?.custom ? itemData?.BaseArmorName : entry.itemName;
+      const armorLookupName = firstNonEmptyString(
+        itemData?.BaseArmorName,
+        itemData?.BaseItem?.split('|')[0],
+        entry.baseArmorName,
+        entry.BaseArmorName,
+        entry.itemName,
+      );
       const stats = getArmorStatsByName(armorLookupName);
       if (stats) {
         if (stats.type === 'shield') {
@@ -462,6 +561,7 @@ getPopulatedSpells() {
 
   getEquippedWeaponAttacks() {
     const equipped = (this.inventory ?? []).filter(e => e.equipped);
+    const supportCombatBonuses = this.getSupportCombatBonuses();
     const toNumber = (value) => {
       if (typeof value === 'number' && Number.isFinite(value)) return value;
       if (typeof value === 'string') {
@@ -486,6 +586,12 @@ getPopulatedSpells() {
       const atkMod = this.getWeaponModifier(item);
       const abilityKey = this.getWeaponAbilityKey(item);
       const isProficient = entry.proficient ?? true;
+      const addProficiencyToDamage = !!(
+        entry.AddProficiencyToDamage
+        ?? entry.addProficiencyToDamage
+        ?? item.AddProficiencyToDamage
+        ?? item.addProficiencyToDamage
+      );
       const magicAttackBonus = toNumber((entry.BonusWeapon ?? item.BonusWeapon) ?? 0);
       const magicDamageBonus = toNumber((entry.BonusDamage ?? item.BonusDamage ?? entry.BonusWeapon ?? item.BonusWeapon) ?? 0);
       const weaponLookupName = firstNonEmptyString(
@@ -507,11 +613,14 @@ getPopulatedSpells() {
         || Array.from(HEAVY_WEAPONS).some(w => weaponName.toLowerCase().includes(w.toLowerCase()));
 
       const gwmBonus = (hasGWM && isHeavy) ? 3 : 0;
-      const finalDamageBonus = atkMod + magicDamageBonus + rageBonus + gwmBonus;
+      const proficiencyDamageBonus = (addProficiencyToDamage && isProficient) ? this.proficiencyBonus : 0;
+      const totalMagicAttackBonus = magicAttackBonus + supportCombatBonuses.attackBonus;
+      const totalMagicDamageBonus = magicDamageBonus + supportCombatBonuses.damageBonus;
+      const finalDamageBonus = atkMod + totalMagicDamageBonus + rageBonus + gwmBonus + proficiencyDamageBonus;
 
       return {
         name: entry.itemName,
-        attackBonus: atkMod + (isProficient ? this.proficiencyBonus : 0) + magicAttackBonus,
+        attackBonus: atkMod + (isProficient ? this.proficiencyBonus : 0) + totalMagicAttackBonus,
         damageDie,
         damageType,
         atkMod,
@@ -519,12 +628,15 @@ getPopulatedSpells() {
         abilityMod: atkMod,
         baseWeaponName: weaponLookupName,
         strMod: atkMod, // Backwards compatibility for UI
-        magicBonus: magicAttackBonus,
-        magicAttackBonus,
-        magicDamageBonus,
+        magicBonus: totalMagicAttackBonus,
+        magicAttackBonus: totalMagicAttackBonus,
+        magicDamageBonus: totalMagicDamageBonus,
+        supportAttackBonus: supportCombatBonuses.attackBonus,
+        supportDamageBonus: supportCombatBonuses.damageBonus,
         isProficient,
         appliedRageBonus: rageBonus,
         featDamageBonus: gwmBonus,
+        proficiencyDamageBonus,
         damageBonus: atkMod,
         finalDamageBonus,
         isWeapon: true,
@@ -555,7 +667,7 @@ getPopulatedSpells() {
       spellSlotsUsed:      this.spellSlotsUsed,
       preparedSpells:      this.preparedSpells,
       knownCantrips:       this.knownCantrips,
-      knownInvocations:    this.knownInvocations,
+      knownInvocations:    normalizeKnownInvocations(this.knownInvocations),
       hpMax:               this.hpMax,
       hpCurrent:           this.hpCurrent,
       hpTemp:              this.hpTemp,

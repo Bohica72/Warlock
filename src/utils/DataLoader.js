@@ -416,7 +416,7 @@ function parseSpells(data) {
       id:          s.name.toLowerCase().replace(/\s+/g, '_'),
       name:        s.name,
       source:      s.source,
-      level:       s.level || 0, // 0 is Cantrip
+      level:       Number.isFinite(parseInt(s.level, 10)) ? parseInt(s.level, 10) : 0, // 0 is Cantrip
       school:      s.school,
       time:        timeStr,
       duration:    durStr,
@@ -551,8 +551,6 @@ export function initialiseData() {
   _spellsByClass = buildSpellIndex(_spells);
   _backgrounds = parseBackgrounds(backgroundData);
   _feats       = parseFeats(featData);
-
-  _feats = parseFeats(featData);
 
 
 
