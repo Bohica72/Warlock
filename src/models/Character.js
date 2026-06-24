@@ -516,14 +516,15 @@ getPopulatedSpells() {
       }
     } else if (safeClassId === 'barbarian') {
       // NOTE: This will eventually be replaced by the Effect Engine, but it's safe to keep for now!
-      base = 10 + conMod; 
+      base = 10;
       dexApplied = dexMod;
-      formula = `Unarmored Defense (10 + DEX + CON ${conMod >= 0 ? '+' : ''}${conMod})`;
+      formula = 'Unarmored Defense (10 + DEX + CON)';
     } else {
       base = 10; dexApplied = dexMod;
       formula = 'Unarmored (10 + DEX mod)';
     }
 
+    const conApplied = safeClassId === 'barbarian' ? conMod : 0;
     const shieldBonus = hasShield ? 2 : 0;
     const { bonusAC } = this.getEquippedBonuses();
 
@@ -531,9 +532,10 @@ getPopulatedSpells() {
       formula,
       base,
       dexApplied,
+      conApplied,
       shieldBonus,
       magicBonus: bonusAC,
-      total:      base + dexApplied + shieldBonus + bonusAC,
+      total:      base + dexApplied + conApplied + shieldBonus + bonusAC,
       isOverride: false,
     };
   }

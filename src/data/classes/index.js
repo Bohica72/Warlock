@@ -1,7 +1,5 @@
 // src/data/classes/index.js
 import { BARBARIAN } from './barbarian';
-import { FIGHTER } from './fighter';
-import { WIZARD } from './wizard';
 import { SORCERER } from './sorcerer';
 import { WARLOCK } from './warlock';
 

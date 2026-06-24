@@ -2376,6 +2376,14 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
                       value={(breakdownRef.current.dexApplied > 0 ? '+' : '') + breakdownRef.current.dexApplied} 
                     />
                   )}
+
+                  {/* CON modifier (Barbarian Unarmored Defense) */}
+                  {(breakdownRef.current?.conApplied ?? 0) !== 0 && (
+                    <BreakdownRow
+                      label="CON Modifier"
+                      value={(breakdownRef.current.conApplied > 0 ? '+' : '') + breakdownRef.current.conApplied}
+                    />
+                  )}
                   
                   {(breakdownRef.current?.shieldBonus ?? 0) > 0 && (
                     <BreakdownRow label="Shield" value={`+${breakdownRef.current.shieldBonus}`} />
