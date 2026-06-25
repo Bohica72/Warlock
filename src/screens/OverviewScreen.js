@@ -98,6 +98,9 @@ export default function OverviewScreen({ route, navigation, onRegisterActions })
   const [breakdownModalVisible, setBreakdownModalVisible] = useState(false);
   const [overrideModalVisible, setOverrideModalVisible]   = useState(false);
   const [overrideInput, setOverrideInput]                 = useState('');
+  const [manualAdjustVisible, setManualAdjustVisible]     = useState(false);
+  const [manualAdjustInput, setManualAdjustInput]         = useState('1');
+  const [manualAdjustContext, setManualAdjustContext]     = useState(null);
   const [featDetail, setFeatDetail] = useState(null);
   const [featDetailVisible, setFeatDetailVisible] = useState(false);
   const [subclassFeatureDetail, setSubclassFeatureDetail] = useState(null);
@@ -583,10 +586,10 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
   };
 
   const rollHitDice = () => {
-    if (diceToSpend < 1 || diceToSpend > character.hitDiceRemaining) return;
+    if (diceToSpend < 1 || diceToSpend > hitDiceRemaining) return;
     let total = 0;
     const rolls = [];
-    for (let i = 0; i < diceToSpend; i++) {
+      for (let i = 0; i < diceToSpend; i++) {
       const roll = rollDie(hitDieFaces);
       rolls.push(roll);
       total += roll + conMod;
@@ -594,16 +597,19 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     total = Math.max(0, total);
     
     // 1. Update the engine directly
-    character.hpCurrent = Math.min(character.hpMax, character.hpCurrent + total);
-    character.hitDiceRemaining -= diceToSpend;
+      character.hpCurrent = Math.min(character.hpMax, character.hpCurrent + total);
+      const nextHitDiceRemaining = Math.max(0, hitDiceRemaining - diceToSpend);
+      character.hitDiceRemaining = nextHitDiceRemaining;
     
     setLastRollResult({ rolls, conMod, total, newHp: character.hpCurrent });
     
     // 2. Save and refresh UI
+    setHpCurrent(character.hpCurrent);
     persist({
       hpCurrent: character.hpCurrent,
-      hitDiceRemaining: character.hitDiceRemaining,
+        hitDiceRemaining: character.hitDiceRemaining,
     });
+    setHitDiceRemaining(character.hitDiceRemaining);
     setRefreshTrigger(prev => prev + 1);
   };
 
@@ -626,13 +632,14 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     const nextManualTiles = applyManualTileRecharge('short', manualTiles);
     character.manualTiles = nextManualTiles;
     setManualTiles(nextManualTiles);
-    persist({
-      hpCurrent: character.hpCurrent,
-      hpTemp: character.hpTemp,
-      hitDiceRemaining: character.hitDiceRemaining,
-      manualTiles: nextManualTiles,
-      ...getResourceStatePatch(),
-    });
+      persist({
+        hpCurrent: character.hpCurrent,
+        hpTemp: character.hpTemp,
+        hitDiceRemaining: character.hitDiceRemaining,
+        manualTiles: nextManualTiles,
+        ...getResourceStatePatch(),
+      });
+    setHitDiceRemaining(character.hitDiceRemaining);
     setRefreshTrigger(prev => prev + 1); // Refresh the UI
     
     setRestModalVisible(false);
@@ -646,9 +653,9 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     setManualTiles(nextManualTiles);
     
     // Update local React state for top-level UI elements
-    setHpCurrent(character.hpCurrent);
-    setHpTemp(character.hpTemp);
-    setHitDiceRemaining(character.hitDiceRemaining);
+      setHpCurrent(character.hpCurrent);
+      setHpTemp(character.hpTemp);
+      setHitDiceRemaining(character.hitDiceRemaining);
     
     persist({
       hpCurrent: character.hpCurrent,
@@ -1046,6 +1053,92 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     };
   };
 
+  const setHitDiceTo = (value) => {
+    const maxDice = Math.max(1, parseInt(character.level, 10) || 1);
+    const next = Math.max(0, Math.min(maxDice, parseInt(value, 10) || 0));
+    character.hitDiceRemaining = next;
+    setHitDiceRemaining(next);
+    persist({ hitDiceRemaining: next });
+    setRefreshTrigger(prev => prev + 1);
+  };
+
+  const openHitDiceManualAdjust = () => {
+    const maxDice = Math.max(1, parseInt(character.level, 10) || 1);
+    setManualAdjustContext({ type: 'hitDice', title: 'Hit Dice', max: maxDice });
+    setManualAdjustInput('1');
+    setManualAdjustVisible(true);
+  };
+
+  const openResourceManualAdjust = (res, max) => {
+    setManualAdjustContext({
+      type: 'resource',
+      title: res.name,
+      id: res.id,
+      isToggle: res.displayType === 'toggle',
+      max,
+    });
+    setManualAdjustInput('1');
+    setManualAdjustVisible(true);
+  };
+
+  const applyManualAdjust = (mode) => {
+    const amount = Math.max(1, parseInt(manualAdjustInput, 10) || 1);
+    const ctx = manualAdjustContext;
+    if (!ctx) return;
+
+    if (ctx.type === 'hitDice') {
+      const level = Math.max(1, parseInt(character.level, 10) || 1);
+      if (mode === 'spend') {
+        setHitDiceTo(hitDiceRemaining - amount);
+      } else if (mode === 'refund') {
+        setHitDiceTo(hitDiceRemaining + amount);
+      } else if (mode === 'reset') {
+        const recoveredDice = Math.max(1, Math.floor(level / 2));
+        const longRestDefault = Math.min(level, hitDiceRemaining + recoveredDice);
+        setHitDiceTo(longRestDefault);
+        setManualAdjustVisible(false);
+        setManualAdjustContext(null);
+        setManualAdjustInput('1');
+      }
+      if (mode === 'spend' || mode === 'refund' || mode === 'reset') {
+        setManualAdjustVisible(false);
+        setManualAdjustContext(null);
+        setManualAdjustInput('1');
+      }
+      return;
+    }
+
+    if (ctx.type === 'resource') {
+      const usedProp = `${ctx.id}Used`;
+      const currentUsed = character[usedProp] || 0;
+      let nextUsed = currentUsed;
+
+      if (mode === 'spend') {
+        if (ctx.max !== 999) nextUsed = Math.min(ctx.max, currentUsed + amount);
+      } else if (mode === 'refund') {
+        nextUsed = Math.max(0, currentUsed - amount);
+      } else if (mode === 'reset') {
+        nextUsed = 0; // Long rest default for tracked "used" counters
+      }
+
+      character[usedProp] = nextUsed;
+      if (ctx.isToggle && (mode === 'refund' || mode === 'reset')) {
+        character.activeToggles[ctx.id] = false;
+      }
+
+      persist({
+        [usedProp]: character[usedProp],
+        activeToggles: { ...(character.activeToggles ?? {}) },
+      });
+      setRefreshTrigger(prev => prev + 1);
+      if (mode === 'spend' || mode === 'refund' || mode === 'reset') {
+        setManualAdjustVisible(false);
+        setManualAdjustContext(null);
+        setManualAdjustInput('1');
+      }
+    }
+  };
+
 
   return (
     <View style={{ flex: 1 }}>
@@ -1085,6 +1178,8 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
             <TouchableOpacity
               style={styles.hitDiceCard}
               onPress={() => setHitDiceModalVisible(true)}
+              onLongPress={openHitDiceManualAdjust}
+              delayLongPress={400}
               activeOpacity={0.8}
             >
               <Text style={styles.cardLabel}>HIT DICE</Text>
@@ -1159,6 +1254,9 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
                     activeToggles: { ...(character.activeToggles ?? {}) },
                   });
                   setRefreshTrigger(prev => prev + 1);
+                },
+                onLongPress: () => {
+                  openResourceManualAdjust(res, max);
                 }
               };
             })
@@ -1578,7 +1676,7 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
           <View style={sharedStyles.modalBox}>
             <Text style={sharedStyles.modalTitle}>Spend Hit Dice</Text>
             <Text style={styles.modalSub}>
-              {character.hitDiceRemaining} / {character.level} d{hitDieFaces} remaining
+              {hitDiceRemaining} / {character.level} d{hitDieFaces} remaining
             </Text>
             <Text style={styles.modalSub}>
               CON {conMod >= 0 ? `+${conMod}` : conMod} added per die
@@ -1611,9 +1709,9 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
             )}
             {!lastRollResult ? (
               <TouchableOpacity
-                style={[sharedStyles.primaryButton, character.hitDiceRemaining === 0 && { backgroundColor: colors.textDisabled }]}
+                style={[sharedStyles.primaryButton, hitDiceRemaining === 0 && { backgroundColor: colors.textDisabled }]}
                 onPress={rollHitDice}
-                disabled={character.hitDiceRemaining === 0}
+                disabled={hitDiceRemaining === 0}
               >
                 <Text style={sharedStyles.primaryButtonText}>Roll {diceToSpend}d{hitDieFaces}</Text>
               </TouchableOpacity>
@@ -1627,6 +1725,40 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
                 <Text style={sharedStyles.cancelText}>Cancel</Text>
               </TouchableOpacity>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={manualAdjustVisible} transparent animationType="slide">
+        <View style={sharedStyles.modalOverlay}>
+          <View style={sharedStyles.modalBox}>
+            <Text style={sharedStyles.modalTitle}>{manualAdjustContext?.title ?? 'Adjust Resource'}</Text>
+            <Text style={styles.modalSub}>Manual override</Text>
+            <TextInput
+              style={[sharedStyles.input, styles.largeInput]}
+              keyboardType="numeric"
+              value={manualAdjustInput}
+              onChangeText={setManualAdjustInput}
+              placeholder="1"
+              placeholderTextColor={colors.textDisabled}
+              autoFocus
+            />
+            <Text style={styles.modalHint}>Enter amount, then choose Spend or Refund.</Text>
+            <View style={styles.modeRow}>
+              <TouchableOpacity style={styles.modeButton} onPress={() => applyManualAdjust('spend')}>
+                <Text style={styles.modeButtonText}>Spend</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modeButton} onPress={() => applyManualAdjust('refund')}>
+                <Text style={styles.modeButtonText}>Refund</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.maxHpLink} onPress={() => applyManualAdjust('reset')}>
+              <Ionicons name="refresh-outline" size={16} color={colors.accentSoft} />
+              <Text style={styles.maxHpLinkText}>Reset to Long Rest Default</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { setManualAdjustVisible(false); setManualAdjustContext(null); setManualAdjustInput('1'); }}>
+              <Text style={sharedStyles.cancelText}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
