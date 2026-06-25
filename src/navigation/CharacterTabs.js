@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Switch, TextInput, Alert, StyleSheet, SafeAreaView, Keyboard, Modal, PanResponder, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Switch, TextInput, Alert, StyleSheet, Keyboard, Modal, PanResponder, Animated, Easing } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography, radius, sharedStyles,shadows } from '../styles/theme';
 import { Character } from '../models/Character';
