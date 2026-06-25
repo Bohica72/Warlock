@@ -1081,6 +1081,12 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     setManualAdjustVisible(true);
   };
 
+  const closeManualAdjustModal = () => {
+    setManualAdjustVisible(false);
+    setManualAdjustContext(null);
+    setManualAdjustInput('1');
+  };
+
   const applyManualAdjust = (mode) => {
     const amount = Math.max(1, parseInt(manualAdjustInput, 10) || 1);
     const ctx = manualAdjustContext;
@@ -1096,14 +1102,9 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
         const recoveredDice = Math.max(1, Math.floor(level / 2));
         const longRestDefault = Math.min(level, hitDiceRemaining + recoveredDice);
         setHitDiceTo(longRestDefault);
-        setManualAdjustVisible(false);
-        setManualAdjustContext(null);
-        setManualAdjustInput('1');
       }
       if (mode === 'spend' || mode === 'refund' || mode === 'reset') {
-        setManualAdjustVisible(false);
-        setManualAdjustContext(null);
-        setManualAdjustInput('1');
+        closeManualAdjustModal();
       }
       return;
     }
@@ -1132,9 +1133,7 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
       });
       setRefreshTrigger(prev => prev + 1);
       if (mode === 'spend' || mode === 'refund' || mode === 'reset') {
-        setManualAdjustVisible(false);
-        setManualAdjustContext(null);
-        setManualAdjustInput('1');
+        closeManualAdjustModal();
       }
     }
   };
@@ -1756,7 +1755,7 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
               <Ionicons name="refresh-outline" size={16} color={colors.accentSoft} />
               <Text style={styles.maxHpLinkText}>Reset to Long Rest Default</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => { setManualAdjustVisible(false); setManualAdjustContext(null); setManualAdjustInput('1'); }}>
+            <TouchableOpacity onPress={closeManualAdjustModal}>
               <Text style={sharedStyles.cancelText}>Close</Text>
             </TouchableOpacity>
           </View>
