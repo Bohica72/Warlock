@@ -70,10 +70,29 @@ function BreakdownRow({ label, value, isTotal }) {
   );
 }
 
-export default function OverviewScreen({ route, navigation, onRegisterActions }) {
+export default function OverviewScreen({ route, navigation, onRegisterActions, onCharacterChange }) {
   const raw       = route.params.character;
-  const character = raw instanceof Character ? raw : new Character(raw);
+  const characterRef = useRef(raw instanceof Character ? raw : new Character(raw));
+  const character = characterRef.current;
   const classData = getClassData(character.classId);
+
+  useEffect(() => {
+    const incoming = raw instanceof Character ? raw : new Character(raw);
+    if (incoming.id === characterRef.current.id) return;
+
+    characterRef.current = incoming;
+    setHpCurrent(incoming.hpCurrent);
+    setHpTemp(incoming.hpTemp ?? 0);
+    setHitDiceRemaining(incoming.hitDiceRemaining ?? incoming.level);
+    setInspiration(incoming.inspiration ?? 0);
+    setCharacterLevel(parseInt(incoming.level, 10) || 1);
+    setManualTiles(Array.isArray(incoming.manualTiles) ? incoming.manualTiles : []);
+    setSelectedLanguages(
+      normalizeStringList(Array.isArray(incoming.languages) ? incoming.languages : [])
+    );
+    setShowUnarmedStrike(incoming.showUnarmedStrike ?? true);
+    setRefreshTrigger(prev => prev + 1);
+  }, [raw]);
 
   // 1. CORE STATE
   const [hpCurrent, setHpCurrent]               = useState(character.hpCurrent);
@@ -372,9 +391,18 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
   const shouldShowEquippedItems = false;
 
   const persist = async (updates) => {
-    Object.assign(character, updates);
-    const mergedCharacter = await patchCharacter(character.id, updates);
-    Object.assign(character, mergedCharacter.toJSON());
+    const startedAt = Date.now();
+    try {
+      Object.assign(character, updates);
+      const mergedCharacter = await patchCharacter(character.id, updates);
+      Object.assign(character, mergedCharacter.toJSON());
+      onCharacterChange?.(mergedCharacter);
+    } catch (error) {
+      if (__DEV__) {
+        console.warn('Persist failed', { durationMs: Date.now() - startedAt, error: error?.message });
+      }
+      throw error;
+    }
   };
 
   const getResourceStatePatch = () => {
