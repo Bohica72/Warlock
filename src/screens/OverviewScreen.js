@@ -683,6 +683,42 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     return typeof resource.maxUses === 'number' ? resource.maxUses : 0; 
   };
 
+  const getProgressionExtraValue = (extraKey) => {
+    const currentLevel = parseInt(character.level, 10) || 1;
+    const table = classData?.progressionExtras?.[extraKey] ?? {};
+    return table[currentLevel];
+  };
+
+  const getResourceTileLabel = (resource, isToggle, isActive) => {
+    if (isToggle && isActive) return null;
+
+    const suffixConfig = resource.ui?.labelSuffixFromProgression;
+    if (!suffixConfig?.key) return resource.name;
+
+    const value = getProgressionExtraValue(suffixConfig.key);
+    if (value == null) return resource.name;
+
+    const prefix = suffixConfig.prefix ?? '';
+    const suffix = suffixConfig.suffix ?? '';
+    return `${resource.name} (${prefix}${value}${suffix})`;
+  };
+
+  const getResourceTileValue = (resource, isToggle, isActive, currentUsed, max) => {
+    if (isToggle) {
+      if (isActive) return resource.ui?.activeValue ?? resource.name.toUpperCase();
+      return max === 999 ? '∞ uses' : `${Math.max(0, max - currentUsed)}/${max}`;
+    }
+
+    if (max === 999) return '∞';
+
+    const valueMode = resource.ui?.valueMode ?? 'used';
+    if (valueMode === 'remaining') {
+      return `${Math.max(0, max - currentUsed)}/${max}`;
+    }
+
+    return `${currentUsed}/${max}`;
+  };
+
     const getItemBonusSummary = (item) => {
     if (!item) return null;
     const parts = [];
@@ -1220,16 +1256,9 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
 
               if (max === 0 && !isActive) return null;
 
-              let displayValue = '';
-              if (isToggle) {
-                displayValue = isActive ? 'RAGING' : (max === 999 ? '∞ uses' : `${Math.max(0, max - currentUsed)}/${max}`);
-              } else {
-                displayValue = max === 999 ? '∞' : `${currentUsed}/${max}`;
-              }
-
               return {
-                label: (isToggle && isActive) ? null : res.name,
-                value: displayValue,
+                label: getResourceTileLabel(res, isToggle, isActive),
+                value: getResourceTileValue(res, isToggle, isActive, currentUsed, max),
                 color: isActive ? '#ff3333' : colors.accentSoft,
                 valueStyle: isActive ? { fontSize: 16, fontWeight: '900', letterSpacing: 1 } : {},
                 onPress: () => {
