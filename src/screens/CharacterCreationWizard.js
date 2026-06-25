@@ -14,6 +14,8 @@ import { getAllClasses } from '../data/classes'; // From your new unified index!
 
 import { colors, spacing, typography, radius, shadows, sharedStyles } from '../styles/theme';
 
+import { SafeAreaView } from 'react-native-safe-area-context';
+
 // ─── Step constants ───────────────────────────────────────────────────────────
 const STEPS = {
   NAME:       'NAME',
@@ -335,6 +337,7 @@ navigation.replace('Character', { character: created });
   };
 
   return (
+    <SafeAreaView style={sharedStyles.screen}>
     <View style={sharedStyles.screen}>
       <StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
@@ -385,6 +388,7 @@ navigation.replace('Character', { character: created });
         </View>
       )}
     </View>
+    </SafeAreaView>
   );
 }
 
