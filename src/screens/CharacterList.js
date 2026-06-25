@@ -31,13 +31,17 @@ import {
 	shadows,
 	sharedStyles,
 } from "../styles/theme";
-import { SafeAreaView } from "react-native-safe-area-context";
+import {
+	SafeAreaView,
+	useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
 // Change the function signature to accept the new prop
 export default function CharacterList({
 	onSelectCharacter,
 	onCreateCharacter,
 }) {
+	const insets = useSafeAreaInsets();
 	const [characters, setCharacters] = useState([]);
 	const [loading, setLoading] = useState(true);
 	const [actionModalVisible, setActionModalVisible] = useState(false);
@@ -250,7 +254,12 @@ export default function CharacterList({
 			/>
 
 			{/* FABs */}
-			<View style={styles.fabRow}>
+			<View
+				style={[
+					styles.fabRow,
+					{ bottom: spacing.lg + insets.bottom },
+				]}
+			>
 				<TouchableOpacity style={styles.fab} onPress={handleImport}>
 					<Ionicons
 						name="download-outline"
@@ -482,7 +491,6 @@ const styles = StyleSheet.create({
 	fabRow: {
 		position: "absolute",
 		right: spacing.lg,
-		bottom: spacing.lg,
 		flexDirection: "row",
 		gap: spacing.md,
 	},
