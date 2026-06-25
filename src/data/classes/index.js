@@ -2,9 +2,11 @@
 import { BARBARIAN } from './barbarian';
 import { SORCERER } from './sorcerer';
 import { WARLOCK } from './warlock';
+import { PSION } from './psion';
 
 const CLASS_REGISTRY = {
   barbarian: BARBARIAN,
+  psion: PSION,
   sorcerer: SORCERER,
   warlock: WARLOCK,
 };

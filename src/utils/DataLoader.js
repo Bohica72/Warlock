@@ -18,12 +18,13 @@ import classSorcerer  from '../data/raw/class-sorcerer.json';
 import classWarlock   from '../data/raw/class-warlock.json';
 import classWizard    from '../data/raw/class-wizard.json';
 import classPugilist  from '../data/raw/class-pugilist.json';
+import classPsion   from '../data/raw/class-psion.json';  
 
 const CLASS_FILES = [
   classBarbarian, classBard,    classCleric,  classDruid,
   classFighter,   classMonk,    classPaladin, classRanger,
   classRogue,     classSorcerer, classWarlock, classWizard,
-  classPugilist,
+  classPugilist,  classPsion
 ];
 
 // ─── Internal state ───────────────────────────────────────────────────────────
