@@ -13,6 +13,9 @@ export const BARBARIAN = {
       id: 'rage',
       name: 'Rage',
       displayType: 'toggle', 
+      ui: {
+        activeValue: 'RAGING',
+      },
       recharge: {
         longRest: 'all',     
         shortRest: 1         

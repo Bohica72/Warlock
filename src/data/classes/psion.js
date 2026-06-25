@@ -27,6 +27,13 @@ export const PSION = {
       id: 'psionic_energy_dice',
       name: 'Psionic Energy Dice',
       displayType: 'numeric',
+      ui: {
+        valueMode: 'remaining',
+        labelSuffixFromProgression: {
+          key: 'energyDieSize',
+          prefix: 'd',
+        },
+      },
       recharge: {
         longRest: 'all',
         shortRest: 1,         // Regain 1 expended die on a Short Rest
