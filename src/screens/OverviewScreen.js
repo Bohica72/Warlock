@@ -19,6 +19,7 @@ import {
 
 const DMG_DEBUG_TAG = '[WARLOCK_DMG_DEBUG]';
 const LESSONS_INVOCATION_ID = 'lessons_of_the_first_ones';
+const MAX_LEVEL_SNAPSHOTS = 20;
 
 function mergeLessonsInvocationFeats(existingFeats, lessonFeatNames, level) {
   const baseFeats = (existingFeats ?? []).filter((feat) => !(feat?.grantedByInvocation === LESSONS_INVOCATION_ID));
@@ -55,6 +56,23 @@ function normalizeStringList(values = []) {
       .filter((value) => typeof value === 'string' && value.trim().length > 0)
       .map((value) => value.trim())
   )].sort((a, b) => a.localeCompare(b));
+}
+
+function sanitizeLevelSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot;
+  return {
+    ...snapshot,
+    // Prevent recursive nesting and runaway payload growth.
+    levelSnapshots: [],
+  };
+}
+
+function normalizeLevelSnapshots(snapshots = []) {
+  if (!Array.isArray(snapshots)) return [];
+  return snapshots
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => sanitizeLevelSnapshot(entry))
+    .slice(-MAX_LEVEL_SNAPSHOTS);
 }
 
 function rollDie(faces) {
@@ -918,6 +936,7 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
 
   const doLevelUp = async () => {
     const calc = calcLevelUp();
+
     if (!calc) return;
 
     const { newLevel, newHpMax, hpIncrease, newProfBonus } = calc;
@@ -939,10 +958,19 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
     let updatedFeats        = [...(character.feats ?? [])];
     let updatedProficiencies = { ...character.proficiencies };
 
-    const snapshotBeforeLevel = JSON.parse(JSON.stringify(character.toJSON()));
-    const nextSnapshots = Array.isArray(character.levelSnapshots)
-      ? [...character.levelSnapshots, snapshotBeforeLevel]
-      : [snapshotBeforeLevel];
+    const snapshotBeforeLevel = sanitizeLevelSnapshot(character.toJSON());
+    const nextSnapshots = [
+      ...normalizeLevelSnapshots(character.levelSnapshots),
+      snapshotBeforeLevel,
+    ].slice(-MAX_LEVEL_SNAPSHOTS);
+
+    // Close the modal before we mutate the character so the preview cannot
+    // re-render against the newly updated level.
+    setAsiChoice(null);
+    setAsiStats([]);
+    setSelectedFeat(null);
+    setFeatChoices({});
+    setLevelUpModalVisible(false);
 
     // Apply ASI (Ability Score Improvement)
     if (asiChoice === 'asi' && asiStats.length > 0) {
@@ -998,7 +1026,7 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
   setHpCurrent(newHpCurrent);
   setHitDiceRemaining(newDiceRemaining);
   setCharacterLevel(newLevel);
-    await persist({
+    const persistPayload = {
       level: newLevel,
       hpMax: character.hpMax,
       hpCurrent: newHpCurrent,
@@ -1008,17 +1036,26 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
       feats: updatedFeats,
       proficiencies: updatedProficiencies,
       levelSnapshots: nextSnapshots,
-    });
+    };
+
+    try {
+      await persist(persistPayload);
+    } catch (error) {
+      const message = String(error?.message ?? '');
+      const isStorageFull = /SQLITE_FULL|disk is full|database or disk is full/i.test(message);
+
+      if (!isStorageFull) throw error;
+
+      const compactSnapshots = normalizeLevelSnapshots(nextSnapshots).slice(-3);
+
+      await persist({
+        ...persistPayload,
+        levelSnapshots: compactSnapshots,
+      });
+    }
     setRefreshTrigger(prev => prev + 1);
 
     const isWarlockInvocationGain = character.classId === 'warlock' && gainedInvocations > 0;
-
-    // Reset choice state and close modal
-    setAsiChoice(null);
-    setAsiStats([]);
-    setSelectedFeat(null);
-    setFeatChoices({});
-    setLevelUpModalVisible(false);
 
     if (isWarlockInvocationGain) {
       navigation.navigate('InvocationPicker', {
@@ -1040,13 +1077,13 @@ const rawAttacks = character.getEquippedWeaponAttacks?.() ?? [];
   };
 
   const doLevelDown = async () => {
-    const snapshots = Array.isArray(character.levelSnapshots) ? character.levelSnapshots : [];
+    const snapshots = normalizeLevelSnapshots(character.levelSnapshots);
     if (snapshots.length === 0) {
       Alert.alert('No Previous Level', 'There is no saved level-up state to revert to.');
       return;
     }
 
-    const previousState = snapshots[snapshots.length - 1];
+    const previousState = sanitizeLevelSnapshot(snapshots[snapshots.length - 1]);
     const remainingSnapshots = snapshots.slice(0, -1);
     const restoredCharacter = new Character({
       ...previousState,
